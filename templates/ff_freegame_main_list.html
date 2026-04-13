@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block content %}
+<style type="text/css">
+  .ffg-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .ffg-search,
+  .ffg-select {
+    background: #1c2035;
+    border: 1px solid #323857;
+    color: #eef2ff;
+    border-radius: 10px;
+    min-height: 38px;
+    padding: 8px 12px;
+  }
+  .ffg-search {
+    flex: 1 1 260px;
+  }
+  .ffg-select {
+    min-width: 180px;
+  }
+  .ffg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 16px;
+  }
+  .ffg-card {
+    background: #171b30;
+    border: 1px solid #31385d;
+    border-radius: 16px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+  }
+  .ffg-card:hover {
+    transform: translateY(-4px);
+    border-color: #6f7cff;
+    box-shadow: 0 14px 28px rgba(0, 0, 0, .28);
+  }
+  .ffg-thumb-wrap {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background: linear-gradient(135deg, #202747, #101425);
+    overflow: hidden;
+  }
+  .ffg-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .ffg-thumb-fallback {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 42px;
+    color: #7f89bc;
+  }
+  .ffg-badge {
+    position: absolute;
+    top: 10px;
+    padding: 4px 10px;
+    border-radius: 9px;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .ffg-badge-platform {
+    left: 10px;
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: .3px;
+    background: #30354a;
+  }
+  .ffg-badge-free {
+    right: 10px;
+    background: #16a34a;
+    color: #fff;
+  }
+  .ffg-platform-epic { background: #2f313a; }
+  .ffg-platform-steam { background: #1b4b91; color: #fff; }
+  .ffg-platform-gog { background: #4a2876; }
+  .ffg-platform-indiegala { background: #2f223f; color: #ff7aa8; }
+  .ffg-platform-stove { background: #0057ff; color: #fff; }
+  .ffg-platform-cheapshark { background: #ff7b00; color: #fff; }
+  .ffg-body {
+    padding: 14px 14px 12px;
+  }
+  .ffg-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #f7f9ff;
+    line-height: 1.35;
+    min-height: 40px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+  .ffg-price {
+    font-size: 15px;
+    font-weight: 800;
+    color: #43f59a;
+    margin-bottom: 10px;
+  }
+  .ffg-genres {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+    min-height: 26px;
+  }
+  .ffg-genre {
+    font-size: 11px;
+    color: #8f8dff;
+    background: rgba(99, 102, 241, .12);
+    border: 1px solid rgba(99, 102, 241, .28);
+    border-radius: 8px;
+    padding: 2px 8px;
+  }
+  .ffg-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .ffg-countdown {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 6px 10px;
+    background: rgba(16, 185, 129, .10);
+    border: 1px solid rgba(16, 185, 129, .22);
+    border-radius: 10px;
+    color: #6ee7b7;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .ffg-rating {
+    min-width: 54px;
+    text-align: right;
+    color: #8e96c4;
+    font-size: 12px;
+  }
+  .ffg-empty {
+    padding: 48px 16px;
+    text-align: center;
+    color: #8e96c4;
+    border: 1px dashed #364066;
+    border-radius: 16px;
+    background: rgba(20, 24, 42, .65);
+  }
+</style>
+
+<div class="ffg-toolbar">
+  <input id="search_word" class="ffg-search" placeholder="게임 제목 검색">
+  <select id="platform_filter" class="ffg-select">
+    <option value="all">전체 플랫폼</option>
+    {% for row in arg.get('platform_counts', []) %}
+    <option value="{{ row['platform'] }}">{{ row['platform'] }} ({{ row['count'] }})</option>
+    {% endfor %}
+  </select>
+  {{ macros.m_button_group([['refresh_list_btn', '새로고침']]) }}
+</div>
+
+<div id="freegame_list" class="ffg-grid"></div>
+
+<script type="text/javascript">
+const package_name = "{{ arg['package_name'] }}";
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function platformClass(platform) {
+  const safe = String(platform || "").toLowerCase();
+  return `ffg-platform-${safe}`;
+}
+
+function platformLabel(platform) {
+  const labels = {
+    epic: "EPIC",
+    steam: "STEAM",
+    gog: "GOG",
+    indiegala: "INDIEGALA",
+    stove: "STOVE",
+    cheapshark: "CHEAPSHARK",
+  };
+  return labels[String(platform || "").toLowerCase()] || String(platform || "").toUpperCase();
+}
+
+function formatCountdown(endValue) {
+  if (!endValue) return "종료 정보 없음";
+  const end = new Date(endValue);
+  if (Number.isNaN(end.getTime())) return endValue;
+  const diff = end.getTime() - Date.now();
+  if (diff <= 0) return "종료됨";
+  const days = Math.floor(diff / 86400000);
+  const hours = Math.floor((diff % 86400000) / 3600000);
+  const minutes = Math.floor((diff % 3600000) / 60000);
+  if (days > 0) return `${days}일 ${hours}시간 남음`;
+  if (hours > 0) return `${hours}시간 ${minutes}분 남음`;
+  return `${minutes}분 남음`;
+}
+
+function gameCard(item) {
+  const imageHtml = item.image_url
+    ? `<img class="ffg-thumb" src="${escapeHtml(item.image_url)}" alt="" loading="lazy">`
+    : `<div class="ffg-thumb-fallback"><i class="fa fa-gamepad"></i></div>`;
+  const genres = Array.isArray(item.genres) ? item.genres.slice(0, 2) : [];
+  const genreHtml = genres.map((genre) => `<span class="ffg-genre">${escapeHtml(genre)}</span>`).join("");
+  const ratingHtml = item.rating && Number(item.rating) > 0
+    ? `${Math.round(Number(item.rating))}`
+    : "";
+
+  return `
+    <article class="ffg-card" data-url="${escapeHtml(item.store_url || "")}">
+      <div class="ffg-thumb-wrap">
+        ${imageHtml}
+        <span class="ffg-badge ffg-badge-platform ${platformClass(item.platform)}">${platformLabel(item.platform)}</span>
+        <span class="ffg-badge ffg-badge-free">FREE</span>
+      </div>
+      <div class="ffg-body">
+        <div class="ffg-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>
+        <div class="ffg-price">무료</div>
+        <div class="ffg-genres">${genreHtml}</div>
+        <div class="ffg-meta">
+          <div class="ffg-countdown"><i class="fa fa-clock-o"></i><span>${escapeHtml(formatCountdown(item.free_end))}</span></div>
+          <div class="ffg-rating">${ratingHtml}</div>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderRows(items) {
+  const container = $("#freegame_list");
+  if (!items || items.length === 0) {
+    container.html("<div class='ffg-empty'>표시할 무료 게임이 없습니다.</div>");
+    return;
+  }
+  container.html(items.map(gameCard).join(""));
+}
+
+function loadList() {
+  $.ajax({
+    url: `/${package_name}/ajax/web_list`,
+    type: "POST",
+    dataType: "json",
+    data: {
+      page: 1,
+      search_word: $("#search_word").val(),
+      platform: $("#platform_filter").val(),
+    },
+    success: function(ret) {
+      renderRows(ret.list || []);
+    },
+    error: function() {
+      $("#freegame_list").html("<div class='ffg-empty'>목록을 불러오지 못했습니다.</div>");
+    }
+  });
+}
+
+$("body").on("click", "#refresh_list_btn", function(e) {
+  e.preventDefault();
+  loadList();
+});
+
+$("body").on("change", "#platform_filter", loadList);
+$("body").on("keyup", "#search_word", function(e) {
+  if (e.key === "Enter") loadList();
+});
+
+$("body").on("click", ".ffg-card", function() {
+  const url = $(this).data("url");
+  if (url) window.open(url, "_blank");
+});
+
+$(document).ready(loadList);
+</script>
+{% endblock %}

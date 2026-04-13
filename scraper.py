@@ -1,0 +1,499 @@
+# -*- coding: utf-8 -*-
+"""
+Game deal scrapers:
+  - Epic Games Store
+  - CheapShark
+  - GOG
+  - IndieGala
+  - STOVE
+"""
+import logging
+import re
+from datetime import datetime, timezone
+
+import requests
+
+log = logging.getLogger(__name__)
+
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
+_HTML_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+}
+_TIMEOUT = 20
+
+
+def _get(url, html=False, **kwargs):
+    headers = _HTML_HEADERS if html else _HEADERS
+    if "headers" not in kwargs:
+        kwargs["headers"] = headers
+    resp = requests.get(url, timeout=_TIMEOUT, **kwargs)
+    resp.raise_for_status()
+    return resp
+
+
+_CS_BASE = "https://www.cheapshark.com/api/1.0"
+_STORE_MAP = {
+    "1": "steam",
+    "3": "gmg",
+    "7": "gog",
+    "11": "humble",
+    "15": "fanatical",
+    "25": "epic",
+    "30": "indiegala",
+}
+_CS_DEDICATED_STORE_IDS = {"1", "7", "25", "30"}
+
+
+def _cs_deal(d, override_platform=None):
+    store_id = str(d.get("storeID", "1"))
+    platform = override_platform or "cheapshark"
+    try:
+        disc = int(float(d.get("savings", 0)))
+    except Exception:
+        disc = 0
+    try:
+        orig = float(d.get("normalPrice", 0))
+    except Exception:
+        orig = 0.0
+    try:
+        curr = float(d.get("salePrice", 0))
+    except Exception:
+        curr = 0.0
+    try:
+        rating = float(d.get("steamRatingPercent") or 0)
+    except Exception:
+        rating = 0.0
+    try:
+        rc = int(d.get("steamRatingCount") or 0)
+    except Exception:
+        rc = 0
+    deal_id = d.get("dealID", "")
+    game_id = d.get("gameID", "")
+    title = d.get("title", "")
+    is_free_period = curr == 0.0 and orig > 0.0
+    return {
+        "external_id": f"cs_{game_id}_{store_id}",
+        "platform": platform,
+        "title": title,
+        "image_url": d.get("thumb", ""),
+        "store_url": f"https://www.cheapshark.com/redirect?dealID={deal_id}" if deal_id else "https://www.cheapshark.com",
+        "original_price": orig,
+        "current_price": curr,
+        "discount_pct": disc,
+        "is_free_period": is_free_period,
+        "free_start": None,
+        "free_end": None,
+        "genres": [],
+        "rating": rating,
+        "rating_count": rc,
+    }
+
+
+def fetch_cheapshark_deals(min_discount=75, max_pages=3):
+    results, seen = [], set()
+    for page in range(max_pages):
+        try:
+            deals = _get(f"{_CS_BASE}/deals", params={
+                "lowerPrice": 0,
+                "upperPrice": 9999,
+                "sortBy": "Savings",
+                "desc": 0,
+                "pageSize": 60,
+                "pageNumber": page,
+                "onSale": 1,
+            }).json()
+        except Exception as e:
+            log.warning("CheapShark page %d failed: %s", page, e)
+            break
+        if not deals:
+            break
+        for d in deals:
+            store_id = str(d.get("storeID", ""))
+            if store_id in _CS_DEDICATED_STORE_IDS:
+                continue
+            try:
+                disc = int(float(d.get("savings", 0)))
+            except Exception:
+                disc = 0
+            if disc < min_discount:
+                continue
+            try:
+                orig = float(d.get("normalPrice", 0))
+            except Exception:
+                orig = 0.0
+            try:
+                curr = float(d.get("salePrice", 0))
+            except Exception:
+                curr = 0.0
+            if not (curr == 0.0 and orig > 0.0):
+                continue
+            key = f"{d.get('gameID', '')}_{store_id}"
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(_cs_deal(d))
+    return results
+
+
+def _fetch_cs_store(store_id: str, min_discount=30, max_pages=3, free_only=False):
+    platform = _STORE_MAP.get(store_id)
+    if not platform:
+        return []
+    results, seen = [], set()
+    for page in range(max_pages):
+        try:
+            deals = _get(f"{_CS_BASE}/deals", params={
+                "storeID": store_id,
+                "sortBy": "Savings",
+                "desc": 0,
+                "pageSize": 60,
+                "pageNumber": page,
+                "onSale": 1,
+            }).json()
+        except Exception as e:
+            log.warning("CheapShark store=%s page %d failed: %s", store_id, page, e)
+            break
+        if not deals:
+            break
+        for d in deals:
+            try:
+                disc = int(float(d.get("savings", 0)))
+            except Exception:
+                disc = 0
+            if disc < min_discount:
+                continue
+            try:
+                orig = float(d.get("normalPrice", 0))
+            except Exception:
+                orig = 0.0
+            try:
+                curr = float(d.get("salePrice", 0))
+            except Exception:
+                curr = 0.0
+            if free_only and not (curr == 0.0 and orig > 0.0):
+                continue
+            key = f"{d.get('gameID', '')}_{store_id}"
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(_cs_deal(d, platform))
+    return results
+
+
+def fetch_steam_deals():
+    return _fetch_cs_store("1", min_discount=0, free_only=True)
+
+
+def fetch_indiegala_deals():
+    return _fetch_cs_store("30", min_discount=30)
+
+
+_EPIC_GQL_URL = "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions"
+_EPIC_INVALID_SLUGS = {"home", "", "/home", "[]"}
+_DEMO_TITLE_RE = re.compile(r"\b(demo|prologue|trial|playtest|beta|free\s*to\s*play|f2p)\b", re.IGNORECASE)
+
+
+def _epic_store_url(el):
+    for m in el.get("offerMappings") or []:
+        slug = (m.get("pageSlug") or "").strip()
+        if slug and slug not in _EPIC_INVALID_SLUGS:
+            return f"https://store.epicgames.com/ko/p/{slug}"
+    for m in ((el.get("catalogNs") or {}).get("mappings") or []):
+        slug = (m.get("pageSlug") or "").strip()
+        if slug and slug not in _EPIC_INVALID_SLUGS:
+            return f"https://store.epicgames.com/ko/p/{slug}"
+    slug = (el.get("productSlug") or "").strip().rstrip("/")
+    if slug and slug not in _EPIC_INVALID_SLUGS:
+        return f"https://store.epicgames.com/ko/p/{slug}"
+    slug = (el.get("urlSlug") or "").strip()
+    if slug and slug not in _EPIC_INVALID_SLUGS:
+        return f"https://store.epicgames.com/ko/p/{slug}"
+    return "https://store.epicgames.com/ko/free-games"
+
+
+def fetch_epic_free():
+    try:
+        data = _get(_EPIC_GQL_URL, params={"locale": "en", "country": "US", "allowCountries": "US"}).json()
+    except Exception as e:
+        log.warning("Epic fetch failed: %s", e)
+        return []
+    elements = data.get("data", {}).get("Catalog", {}).get("searchStore", {}).get("elements", [])
+    results = []
+    seen_titles = set()
+    for el in elements:
+        title = (el.get("title") or "").strip()
+        if not title or _DEMO_TITLE_RE.search(title):
+            continue
+        promo = el.get("promotions") or {}
+        offers = [o for g in (promo.get("promotionalOffers") or []) for o in (g.get("promotionalOffers") or [])]
+        upcoming = [o for g in (promo.get("upcomingPromotionalOffers") or []) for o in (g.get("promotionalOffers") or [])]
+        price_info = (el.get("price") or {}).get("totalPrice") or {}
+        decimals = (price_info.get("currencyInfo") or {}).get("decimals", 2)
+        divisor = 10 ** decimals
+        original = (price_info.get("originalPrice") or 0) / divisor
+        disc_price = (price_info.get("discountPrice") or price_info.get("originalPrice") or 0) / divisor
+        free_start = None
+        free_end = None
+        is_free_now = False
+        active_disc_pct = None
+        for o in offers:
+            ds = o.get("discountSetting", {})
+            if ds.get("discountType") == "PERCENTAGE":
+                pct = ds.get("discountPercentage", 100)
+                if pct == 0:
+                    is_free_now = True
+                    free_start = _parse_dt(o.get("startDate"))
+                    free_end = _parse_dt(o.get("endDate"))
+                    break
+                active_disc_pct = pct
+        is_upcoming_free = False
+        if not is_free_now:
+            for o in upcoming:
+                ds = o.get("discountSetting", {})
+                if ds.get("discountType") == "PERCENTAGE" and ds.get("discountPercentage", 100) == 0:
+                    is_upcoming_free = True
+                    free_start = _parse_dt(o.get("startDate"))
+                    free_end = _parse_dt(o.get("endDate"))
+                    break
+        if not is_free_now and not is_upcoming_free:
+            continue
+        title_key = title.lower()
+        if title_key in seen_titles:
+            continue
+        seen_titles.add(title_key)
+        if is_free_now:
+            current_price = 0.0
+            discount_pct = 100
+        else:
+            current_price = disc_price
+            discount_pct = active_disc_pct if active_disc_pct is not None else (round((1 - disc_price / original) * 100) if original > 0 else 0)
+        image_url = ""
+        for img in el.get("keyImages") or []:
+            if img.get("type") in ("DieselStoreFrontWide", "OfferImageWide", "Thumbnail"):
+                image_url = img.get("url", "")
+                break
+        genres = [t.get("name", "") for t in (el.get("tags") or []) if t.get("groupName") == "genre"]
+        results.append({
+            "external_id": el.get("id") or el.get("urlSlug") or title,
+            "platform": "epic",
+            "title": title,
+            "image_url": image_url,
+            "store_url": _epic_store_url(el),
+            "original_price": original,
+            "current_price": current_price,
+            "discount_pct": discount_pct,
+            "is_free_period": is_free_now,
+            "free_start": free_start,
+            "free_end": free_end,
+            "genres": genres,
+            "rating": 0.0,
+            "rating_count": 0,
+        })
+    return results
+
+
+_GOG_CATALOG_URL = "https://catalog.gog.com/v1/catalog"
+
+
+def fetch_gog_free():
+    try:
+        data = _get(_GOG_CATALOG_URL, params={
+            "limit": 48,
+            "filters": "priceRange:free,0-0",
+            "order": "desc:score",
+            "productType": "in:game",
+            "countryCode": "US",
+            "locale": "en-US",
+        }).json()
+    except Exception as e:
+        log.warning("GOG fetch failed: %s", e)
+        return []
+    results = []
+    for p in data.get("products", []):
+        title = (p.get("title") or "").strip()
+        if not title or _DEMO_TITLE_RE.search(title):
+            continue
+        if (p.get("productType") or "").lower() == "demo":
+            continue
+        price_info = p.get("price") or {}
+        final_money = price_info.get("finalMoney") or {}
+        base_money = price_info.get("baseMoney") or {}
+        try:
+            curr = float(final_money.get("amount") or 0)
+            orig = float(base_money.get("amount") or 0)
+        except Exception:
+            curr = orig = 0.0
+        if curr > 0.0:
+            continue
+        slug = p.get("slug", "")
+        results.append({
+            "external_id": f"gog_{p.get('id', slug)}",
+            "platform": "gog",
+            "title": title,
+            "image_url": p.get("coverHorizontal") or p.get("coverVertical") or "",
+            "store_url": p.get("storeLink") or (f"https://www.gog.com/en/game/{slug}" if slug else "https://www.gog.com"),
+            "original_price": orig,
+            "current_price": 0.0,
+            "discount_pct": 100 if orig > 0 else 0,
+            "is_free_period": True,
+            "free_start": None,
+            "free_end": None,
+            "genres": [g.get("name", "") for g in (p.get("genres") or [])],
+            "rating": float(p.get("reviewsRating") or 0),
+            "rating_count": int(p.get("reviewsCount") or 0),
+        })
+    return results
+
+
+_INDIEGALA_FREE_URL = "https://freebies.indiegala.com/"
+
+
+def fetch_indiegala_free():
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(_get(_INDIEGALA_FREE_URL, html=True).text, "html.parser")
+    except Exception as e:
+        log.warning("IndieGala freebies fetch failed: %s", e)
+        return []
+    results = []
+    for col in soup.find_all("div", class_="products-col-inner"):
+        try:
+            img = col.find("img")
+            if not img:
+                continue
+            image_url = img.get("data-img-src") or img.get("src") or ""
+            title_div = col.find("div", class_="product-title")
+            if title_div:
+                title = title_div.get_text(strip=True)
+            else:
+                title = re.sub(r"\s+product image\s*$", "", img.get("alt", ""), flags=re.IGNORECASE).strip()
+            if not title:
+                continue
+            link_tag = col.find("a", class_="fit-click")
+            if link_tag and link_tag.get("href"):
+                href = link_tag["href"]
+                store_url = href if href.startswith("http") else "https://freebies.indiegala.com" + href
+            else:
+                store_url = _INDIEGALA_FREE_URL
+            img_id = re.search(r"/([a-f0-9]{8}-[a-f0-9\\-]{4,})/", image_url)
+            external_id = f"ig_free_{img_id.group(1)}" if img_id else f"ig_free_{re.sub(r'[^a-z0-9]+', '_', title.lower()).strip('_')}"
+            results.append({
+                "external_id": external_id,
+                "platform": "indiegala",
+                "title": title,
+                "image_url": image_url,
+                "store_url": store_url,
+                "original_price": 0.0,
+                "current_price": 0.0,
+                "discount_pct": 100,
+                "is_free_period": True,
+                "free_start": None,
+                "free_end": None,
+                "genres": [],
+                "rating": 0.0,
+                "rating_count": 0,
+            })
+        except Exception:
+            continue
+    return results
+
+
+def _is_stove_demo_game(store_url):
+    try:
+        html = _get(store_url, html=True).text
+    except Exception as e:
+        log.warning("STOVE detail fetch failed: %s", e)
+        return False
+    if "/ko/store/search?types=DEMO" in html:
+        return True
+    return bool(re.search(r">\s*DEMO\s*<", html, re.IGNORECASE))
+
+
+def fetch_stove_deals():
+    try:
+        from bs4 import BeautifulSoup
+        resp = _get("https://store.onstove.com/ko/store/stoveindie", html=True)
+        soup = BeautifulSoup(resp.text, "html.parser")
+    except Exception as e:
+        log.warning("STOVE fetch failed: %s", e)
+        return []
+    results = []
+    seen = set()
+    for anchor in soup.find_all("a", href=True):
+        href = str(anchor.get("href") or "").strip()
+        if "/ko/games/" not in href:
+            continue
+        parent = anchor.parent
+        block_text = " ".join(parent.get_text(" ", strip=True).split()) if parent is not None else ""
+        combined_text = f"{block_text} {' '.join(anchor.get_text(' ', strip=True).split())}".strip()
+        if "무료" not in combined_text and "FREE" not in combined_text.upper():
+            continue
+        game_id = href.rstrip("/").split("/")[-1]
+        if game_id in seen:
+            continue
+        seen.add(game_id)
+        title = ""
+        probe = parent
+        for _ in range(4):
+            if probe is None:
+                break
+            title_node = probe.find(["h1", "h2", "h3", "strong"])
+            if title_node is not None:
+                title = " ".join(title_node.get_text(" ", strip=True).split())
+                if title:
+                    break
+            probe = probe.parent
+        if not title:
+            title = game_id
+        if _DEMO_TITLE_RE.search(title):
+            continue
+        image_url = ""
+        image_node = anchor.find("img") or (parent.find("img") if parent is not None else None)
+        if image_node is not None:
+            image_url = image_node.get("src") or image_node.get("data-src") or ""
+        store_url = href if href.startswith("http") else f"https://store.onstove.com{href}"
+        if _is_stove_demo_game(store_url):
+            continue
+        results.append({
+            "external_id": f"stove_{game_id}",
+            "platform": "stove",
+            "title": title,
+            "image_url": image_url,
+            "store_url": store_url,
+            "original_price": 0.0,
+            "current_price": 0.0,
+            "discount_pct": 100,
+            "is_free_period": True,
+            "free_start": None,
+            "free_end": None,
+            "genres": [],
+            "rating": 0.0,
+            "rating_count": 0,
+        })
+    return results
+
+
+def fetch_all():
+    return {
+        "epic": fetch_epic_free(),
+        "steam": fetch_steam_deals(),
+        "cheapshark": fetch_cheapshark_deals(),
+        "gog": fetch_gog_free(),
+        "indiegala": fetch_indiegala_deals(),
+        "indiegala_free": fetch_indiegala_free(),
+        "stove": fetch_stove_deals(),
+    }
+
+
+def _parse_dt(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s).rstrip("Z")).replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
