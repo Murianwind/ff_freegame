@@ -206,6 +206,7 @@ def _steam_game_dict(appid: int, detail: dict):
     price_overview = detail.get("price_overview") or {}
     original = price_overview.get("initial", 0) / 100
     current  = price_overview.get("final", 0) / 100
+    discount = price_overview.get("discount_percent", 0)
     rec = detail.get("recommendations") or {}
     genres = [g.get("description", "") for g in (detail.get("genres") or [])]
     categories = [c.get("description", "") for c in (detail.get("categories") or [])]
@@ -231,7 +232,7 @@ def _steam_game_dict(appid: int, detail: dict):
         "store_url":      f"https://store.steampowered.com/app/{appid}/",
         "original_price": original,
         "current_price":  current,
-        "discount_pct":   price_overview.get("discount_percent", 0),
+        "discount_pct":   discount,
         "is_free_period": True,
         "free_start": None, "free_end": None,
         "genres":         genres,
