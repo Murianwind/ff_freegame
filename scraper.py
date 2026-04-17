@@ -102,7 +102,7 @@ def fetch_cheapshark_deals(min_discount=75, max_pages=3):
                 "lowerPrice": 0,
                 "upperPrice": 9999,
                 "sortBy": "Savings",
-                "desc": 0,
+                "desc": 1,
                 "pageSize": 60,
                 "pageNumber": page,
                 "onSale": 1,
@@ -121,7 +121,7 @@ def fetch_cheapshark_deals(min_discount=75, max_pages=3):
             except Exception:
                 disc = 0
             if disc < min_discount:
-                continue
+                break
             try:
                 orig = float(d.get("normalPrice", 0))
             except Exception:
@@ -150,7 +150,7 @@ def _fetch_cs_store(store_id: str, min_discount=30, max_pages=3, free_only=False
             deals = _get(f"{_CS_BASE}/deals", params={
                 "storeID": store_id,
                 "sortBy": "Savings",
-                "desc": 0,
+                "desc": 1,
                 "pageSize": 60,
                 "pageNumber": page,
                 "onSale": 1,
@@ -166,7 +166,7 @@ def _fetch_cs_store(store_id: str, min_discount=30, max_pages=3, free_only=False
             except Exception:
                 disc = 0
             if disc < min_discount:
-                continue
+                break
             try:
                 orig = float(d.get("normalPrice", 0))
             except Exception:
