@@ -46,7 +46,7 @@ _STORE_MAP = {
     "25": "epic",
     "30": "indiegala",
 }
-_CS_DEDICATED_STORE_IDS = {"1", "7", "25", "30"}
+_CS_DEDICATED_STORE_IDS = {"1", "7", "30"}
 
 
 def _cs_deal(d, override_platform=None):
