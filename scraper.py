@@ -573,7 +573,267 @@ def _is_stove_demo_game(store_url):
     return bool(re.search(r">\s*DEMO\s*<", html, re.IGNORECASE))
 
 
+def fetch_stove_free():
+    try:
+        import json
+        from bs4 import BeautifulSoup
+    except Exception:
+        log.warning("BeautifulSoup not installed; STOVE skipped")
+        return []
+
+    def _abs_url(url):
+        if not url:
+            return ""
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        if url.startswith("//"):
+            return "https:" + url
+        return "https://store.onstove.com" + url
+
+    def _to_float(value):
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = re.sub(r"[^0-9.]+", "", str(value))
+        if not text:
+            return 0.0
+        try:
+            return float(text)
+        except Exception:
+            return 0.0
+
+    def _price_values(text):
+        values = []
+        for match in re.finditer(r"(?:USD|KRW|[₩$])\s*([0-9][0-9,]*(?:\.[0-9]+)?)", text):
+            try:
+                values.append(float(match.group(1).replace(",", "")))
+            except Exception:
+                pass
+        return values
+
+    def _iter_dicts(node):
+        if isinstance(node, dict):
+            yield node
+            for value in node.values():
+                for item in _iter_dicts(value):
+                    yield item
+        elif isinstance(node, list):
+            for value in node:
+                for item in _iter_dicts(value):
+                    yield item
+
+    def _pick(dct, keys):
+        for key in keys:
+            value = dct.get(key)
+            if value not in (None, "", [], {}):
+                return value
+        return None
+
+    def _store_url(game_id, data):
+        url = _pick(data, ["storeUrl", "store_url", "productUrl", "product_url", "url"])
+        if url:
+            return _abs_url(str(url).strip())
+        return "https://store.onstove.com/ko/games/" + str(game_id)
+
+    def _build_game(data):
+        game_id = _pick(data, ["productNo", "productId", "product_id", "id", "no"])
+        if game_id in (None, ""):
+            return None
+        game_id = str(game_id).strip()
+        title = _pick(data, ["productName", "name", "title", "product_name"])
+        if not title:
+            return None
+        title = " ".join(str(title).split())
+        if _DEMO_TITLE_RE.search(title):
+            return None
+
+        current_price = _to_float(_pick(data, ["salePrice", "discountPrice", "currentPrice", "finalPrice", "price", "sellingPrice", "sale_price"]))
+        original_price = _to_float(_pick(data, ["originPrice", "originalPrice", "listPrice", "basePrice", "priceBeforeDiscount", "normalPrice", "origin_price"]))
+        if original_price <= 0.0 or current_price != 0.0:
+            return None
+
+        image_url = _pick(data, ["imageUrl", "image_url", "thumbnailUrl", "thumbnail_image_url", "verticalImageUrl", "horizontalImageUrl", "coverImageUrl"]) or ""
+        return {
+            "external_id": "stove_" + game_id,
+            "platform": "stove",
+            "title": title,
+            "image_url": _abs_url(str(image_url).strip()),
+            "store_url": _store_url(game_id, data),
+            "original_price": original_price,
+            "current_price": 0.0,
+            "discount_pct": 100,
+            "is_free_period": True,
+            "free_start": None,
+            "free_end": None,
+            "genres": [],
+            "rating": 0.0,
+            "rating_count": 0,
+        }
+
+    def _collect_games(payload, seen):
+        games = []
+        for item in _iter_dicts(payload):
+            game = _build_game(item)
+            if not game:
+                continue
+            if game["external_id"] in seen:
+                continue
+            seen.add(game["external_id"])
+            games.append(game)
+        return games
+
+    def _extract_json_from_html(html):
+        payloads = []
+        for match in re.finditer(r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>', html, re.I | re.S):
+            raw = match.group(1).strip()
+            if not raw:
+                continue
+            try:
+                payloads.append(json.loads(raw))
+            except Exception:
+                pass
+        for pattern in [r"__NUXT__\s*=\s*(\{.*?\})\s*</script>", r"window\.__STORE__\s*=\s*(\{.*?\})\s*;"]:
+            for match in re.finditer(pattern, html, re.I | re.S):
+                try:
+                    payloads.append(json.loads(match.group(1)))
+                except Exception:
+                    pass
+        return payloads
+
+    def _stove_get(session, url, html=False, **kwargs):
+        headers = _HTML_HEADERS if html else _HEADERS
+        if "headers" not in kwargs:
+            kwargs["headers"] = headers
+        resp = session.get(url, timeout=_TIMEOUT, allow_redirects=True, **kwargs)
+        resp.raise_for_status()
+        return resp
+
+    api_headers = dict(_HEADERS, Referer="https://store.onstove.com/", Accept="application/json")
+    html_headers = dict(_HTML_HEADERS, Referer="https://store.onstove.com/")
+    api_urls = [
+        "https://store.onstove.com/api/v2/product/list?product_type=GAME&price_type=FREE&page=1&size=20",
+        "https://api.onstove.com/store/v2/product/list?product_type=GAME&price_type=FREE",
+        "https://store.onstove.com/api/store/v2/event/freegame",
+    ]
+    page_urls = [
+        "https://store.onstove.com/ko/games?priceFilter=FREE",
+        "https://store.onstove.com/ko/promotions",
+    ]
+    results = []
+    seen = set()
+    session = requests.Session()
+
+    try:
+        _stove_get(session, "https://store.onstove.com/", html=True, headers=html_headers)
+    except Exception as e:
+        log.warning("STOVE session bootstrap failed: %s", e)
+
+    for api_url in api_urls:
+        try:
+            payload = _stove_get(session, api_url, headers=api_headers).json()
+        except Exception as e:
+            log.warning("STOVE API fetch failed: %s (%s)", api_url, e)
+            continue
+        results.extend(_collect_games(payload, seen))
+        if results:
+            log.info("STOVE free: %d game(s) found via API", len(results))
+            return results
+
+    for page_url in page_urls:
+        try:
+            html = _stove_get(session, page_url, html=True, headers=html_headers).text
+        except Exception as e:
+            log.warning("STOVE page fetch failed: %s (%s)", page_url, e)
+            continue
+
+        for payload in _extract_json_from_html(html):
+            results.extend(_collect_games(payload, seen))
+        if results:
+            log.info("STOVE free: %d game(s) found via embedded JSON", len(results))
+            return results
+
+        soup = BeautifulSoup(html, "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            href = str(anchor.get("href") or "").strip()
+            match = re.search(r"/games/(\d+)", href)
+            if not match:
+                continue
+            game_id = match.group(1)
+            external_id = "stove_" + game_id
+            if external_id in seen:
+                continue
+
+            block = anchor
+            for _ in range(5):
+                text = " ".join(block.stripped_strings)
+                prices = _price_values(text)
+                if "-100%" in text and prices and prices[-1] == 0.0 and any(value > 0.0 for value in prices[:-1]):
+                    break
+                if block.parent is None:
+                    block = None
+                    break
+                block = block.parent
+            if block is None:
+                continue
+
+            title = ""
+            for tag in block.find_all(["h1", "h2", "h3", "h4", "strong"]):
+                title = " ".join(tag.get_text(" ", strip=True).split())
+                if title:
+                    break
+            if not title:
+                title = game_id
+            if _DEMO_TITLE_RE.search(title):
+                continue
+
+            prices = _price_values(" ".join(block.stripped_strings))
+            if len(prices) < 2:
+                continue
+            original_price = 0.0
+            for value in prices[:-1]:
+                original_price = _to_float(value)
+                if original_price > 0.0:
+                    break
+            if original_price <= 0.0 or _to_float(prices[-1]) != 0.0:
+                continue
+
+            image_url = ""
+            image_node = block.find("img") or anchor.find("img")
+            if image_node is not None:
+                image_url = image_node.get("src") or image_node.get("data-src") or image_node.get("data-lazy-src") or ""
+
+            seen.add(external_id)
+            results.append({
+                "external_id": external_id,
+                "platform": "stove",
+                "title": title,
+                "image_url": _abs_url(str(image_url).strip()),
+                "store_url": _abs_url(href),
+                "original_price": original_price,
+                "current_price": 0.0,
+                "discount_pct": 100,
+                "is_free_period": True,
+                "free_start": None,
+                "free_end": None,
+                "genres": [],
+                "rating": 0.0,
+                "rating_count": 0,
+            })
+
+        if results:
+            log.info("STOVE free: %d game(s) found via HTML fallback", len(results))
+            return results
+
+    log.info("STOVE free: %d game(s) found", len(results))
+    return results
+
+
 def fetch_stove_deals():
+    return fetch_stove_free()
+
+
+def _fetch_stove_deals_legacy():
     try:
         from bs4 import BeautifulSoup
         resp = _get("https://store.onstove.com/ko/store/stoveindie", html=True)
