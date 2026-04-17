@@ -185,8 +185,161 @@ def _fetch_cs_store(store_id: str, min_discount=30, max_pages=3, free_only=False
     return results
 
 
-def fetch_steam_deals():
-    return _fetch_cs_store("1", min_discount=0, free_only=True)
+_STEAM_SEARCH_URL = "https://store.steampowered.com/search/results/"
+_STEAM_FEATURED_URL = "https://store.steampowered.com/api/featuredcategories"
+_STEAM_APPDETAILS_URL = "https://store.steampowered.com/api/appdetails"
+
+
+def _steam_appdetails(appid: int):
+    try:
+        data = _get(_STEAM_APPDETAILS_URL, params={"appids": appid, "cc": "us", "l": "en"}).json()
+        app_data = data.get(str(appid), {})
+        if not app_data.get("success"):
+            return None
+        return app_data.get("data")
+    except Exception as e:
+        log.debug("Steam appdetails %d failed: %s", appid, e)
+        return None
+
+
+def _steam_game_dict(appid: int, detail: dict):
+    price_overview = detail.get("price_overview") or {}
+    original = price_overview.get("initial", 0) / 100
+    current  = price_overview.get("final", 0) / 100
+    rec = detail.get("recommendations") or {}
+    genres = [g.get("description", "") for g in (detail.get("genres") or [])]
+    categories = [c.get("description", "") for c in (detail.get("categories") or [])]
+
+    free_weekend = any("Free Weekend" in c for c in categories)
+
+    # 상시 F2P 제외: is_free=True이면서 원가가 없는 경우 (행사 중 is_free=True로 바뀌므로 original > 0이면 행사로 간주)
+    is_f2p = detail.get("is_free", False)
+    permanently_free = is_f2p and original <= 0 and not free_weekend
+    if permanently_free:
+        return None
+
+    is_free_period = (current == 0.0 and original > 0.0) or free_weekend
+    if not is_free_period:
+        return None
+
+    return {
+        "external_id":    f"steam_{appid}",
+        "platform":       "steam",
+        "title":          detail.get("name", ""),
+        "image_url":      detail.get("header_image", ""),
+        "store_url":      f"https://store.steampowered.com/app/{appid}/",
+        "original_price": original,
+        "current_price":  current,
+        "discount_pct":   price_overview.get("discount_percent", 0),
+        "is_free_period": True,
+        "free_start": None, "free_end": None,
+        "genres":         genres,
+        "rating": 0.0, "rating_count": rec.get("total", 0),
+    }
+
+
+def _fetch_steam_search_appids(max_pages: int = 5) -> list:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        log.warning("BeautifulSoup not installed; Steam search skipped")
+        return []
+    appids, seen = [], set()
+    for page in range(1, max_pages + 1):
+        try:
+            resp = _get(_STEAM_SEARCH_URL, params={
+                "specials": 1, "maxprice": "free", "cc": "us", "l": "english",
+                "infinite": 1, "start": (page - 1) * 25, "count": 25, "json": 1,
+            }, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": "https://store.steampowered.com/",
+            })
+            try:
+                j = resp.json()
+                html_chunk = j.get("results_html", "")
+            except Exception:
+                html_chunk = resp.text
+            soup = BeautifulSoup(html_chunk, "html.parser")
+            items = soup.find_all("a", attrs={"data-ds-appid": True})
+            if not items:
+                break
+            for a in items:
+                for part in a["data-ds-appid"].split(","):
+                    try:
+                        aid = int(part.strip())
+                        if aid > 0 and aid not in seen:
+                            seen.add(aid)
+                            appids.append(aid)
+                    except ValueError:
+                        pass
+            if len(items) < 25:
+                break
+        except Exception as e:
+            log.warning("Steam search page %d failed: %s", page, e)
+            break
+    log.info("Steam search: %d appid(s)", len(appids))
+    return appids
+
+
+def _fetch_steam_featured_appids() -> list:
+    appids, seen = [], set()
+    try:
+        data = _get(_STEAM_FEATURED_URL, params={"cc": "us", "l": "en"}).json()
+    except Exception as e:
+        log.warning("Steam featuredcategories failed: %s", e)
+        return appids
+    target_keys = {"specials", "coming_soon", "top_sellers", "new_releases", "free_to_play", "weekend_deals"}
+    for key, val in data.items():
+        if not isinstance(val, dict):
+            continue
+        if key not in target_keys:
+            name = (val.get("name") or "").lower()
+            if not any(k in name for k in ("free", "weekend", "special")):
+                continue
+        for item in (val.get("items") or []):
+            aid = item.get("id") or item.get("appid")
+            try:
+                aid = int(aid)
+                if aid > 0 and aid not in seen:
+                    seen.add(aid)
+                    appids.append(aid)
+            except (ValueError, TypeError):
+                pass
+    log.info("Steam featured: %d appid(s)", len(appids))
+    return appids
+
+
+def fetch_steam_free(max_detail_calls: int = 60) -> list:
+    import time
+    seen, candidates = set(), []
+    for aid in _fetch_steam_search_appids() + _fetch_steam_featured_appids():
+        if aid not in seen:
+            seen.add(aid)
+            candidates.append(aid)
+    log.info("Steam: %d candidate(s) to validate", len(candidates))
+    results, calls = [], 0
+    for appid in candidates:
+        if calls >= max_detail_calls:
+            break
+        detail = _steam_appdetails(appid)
+        calls += 1
+        if not detail:
+            continue
+        # game/bundle만 허용 — dlc, mod, application, demo, soundtrack 등 제외
+        if detail.get("type", "").lower() not in ("game", "bundle", ""):
+            continue
+        title = detail.get("name", "")
+        if _DEMO_TITLE_RE.search(title):
+            log.debug("Steam: skipping demo/trial: %s", title)
+            continue
+        game = _steam_game_dict(appid, detail)
+        if game:
+            results.append(game)
+        time.sleep(0.3)
+    log.info("Steam free: %d game(s) found", len(results))
+    return results
 
 
 def fetch_indiegala_deals():
@@ -481,7 +634,7 @@ def fetch_stove_deals():
 def fetch_all():
     return {
         "epic": fetch_epic_free(),
-        "steam": fetch_steam_deals(),
+        "steam": fetch_steam_free(),
         "cheapshark": fetch_cheapshark_deals(),
         "gog": fetch_gog_free(),
         "indiegala": fetch_indiegala_deals(),
