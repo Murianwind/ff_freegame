@@ -100,7 +100,7 @@ def fetch_cheapshark_deals(min_discount=75, max_pages=3):
         try:
             deals = _get(f"{_CS_BASE}/deals", params={
                 "lowerPrice": 0,
-                "upperPrice": 9999,
+                "upperPrice": 0,
                 "sortBy": "Savings",
                 "desc": 1,
                 "pageSize": 60,
