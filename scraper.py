@@ -218,7 +218,8 @@ def _steam_game_dict(appid: int, detail: dict):
     if permanently_free:
         return None
 
-    is_free_period = (current == 0.0 and original > 0.0) or free_weekend
+    # discount_percent=100 을 우선 신뢰 (final 값이 0이 아닌 경우도 있음 — Steam API 불일치)
+    is_free_period = (original > 0.0 and (current == 0.0 or discount == 100)) or free_weekend
     if not is_free_period:
         return None
 
@@ -312,32 +313,36 @@ def _fetch_steam_featured_appids() -> list:
 
 
 def fetch_steam_free(max_detail_calls: int = 60) -> list:
-    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     seen, candidates = set(), []
     for aid in _fetch_steam_search_appids() + _fetch_steam_featured_appids():
         if aid not in seen:
             seen.add(aid)
             candidates.append(aid)
+    candidates = candidates[:max_detail_calls]
     log.info("Steam: %d candidate(s) to validate", len(candidates))
-    results, calls = [], 0
-    for appid in candidates:
-        if calls >= max_detail_calls:
-            break
+
+    def _process(appid):
         detail = _steam_appdetails(appid)
-        calls += 1
         if not detail:
-            continue
-        # game/bundle만 허용 — dlc, mod, application, demo, soundtrack 등 제외
+            return None
         if detail.get("type", "").lower() not in ("game", "bundle", ""):
-            continue
+            return None
         title = detail.get("name", "")
         if _DEMO_TITLE_RE.search(title):
             log.debug("Steam: skipping demo/trial: %s", title)
-            continue
+            return None
         game = _steam_game_dict(appid, detail)
-        if game:
-            results.append(game)
-        time.sleep(0.3)
+        return game if game and game.get("is_free_period") else None
+
+    results = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_process, aid): aid for aid in candidates}
+        for future in as_completed(futures):
+            game = future.result()
+            if game:
+                results.append(game)
+
     log.info("Steam free: %d game(s) found", len(results))
     return results
 
