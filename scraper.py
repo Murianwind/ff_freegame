@@ -637,7 +637,7 @@ def fetch_stove_free():
         return "https://store.onstove.com/ko/games/" + str(game_id)
 
     def _build_game(data):
-        game_id = _pick(data, ["productNo", "productId", "product_id", "id", "no"])
+        game_id = _pick(data, ["productNo", "productId", "product_id"])
         if game_id in (None, ""):
             return None
         game_id = str(game_id).strip()
@@ -673,6 +673,27 @@ def fetch_stove_free():
 
     def _collect_games(payload, seen):
         games = []
+        items = None
+        if isinstance(payload, dict):
+            candidate_lists = [value for value in payload.values() if isinstance(value, list)]
+            if candidate_lists:
+                items = max(candidate_lists, key=len)
+        elif isinstance(payload, list):
+            items = payload
+
+        if items is not None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                game = _build_game(item)
+                if not game:
+                    continue
+                if game["external_id"] in seen:
+                    continue
+                seen.add(game["external_id"])
+                games.append(game)
+            return games
+
         for item in _iter_dicts(payload):
             game = _build_game(item)
             if not game:
