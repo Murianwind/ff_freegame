@@ -671,7 +671,42 @@ def fetch_stove_free():
             "rating_count": 0,
         }
 
-    def _collect_games(payload, seen):
+    detail_price_re = re.compile(
+        r"-100%\s+[^0-9]{0,5}([0-9][0-9,]*(?:\.[0-9]+)?)\s+[^0-9]{0,5}(0(?:\.0+)?)\b"
+    )
+    detail_cache = {}
+
+    def _verify_detail_free_promo(session, store_url):
+        if store_url in detail_cache:
+            return detail_cache[store_url]
+        try:
+            html = _stove_get(session, store_url, html=True, headers=html_headers).text
+        except Exception as e:
+            log.warning("STOVE detail fetch failed: %s (%s)", store_url, e)
+            detail_cache[store_url] = None
+            return None
+
+        text = " ".join(BeautifulSoup(html, "html.parser").stripped_strings)
+        match = detail_price_re.search(text)
+        if not match:
+            detail_cache[store_url] = None
+            return None
+
+        original_price = _to_float(match.group(1))
+        current_price = _to_float(match.group(2))
+        if original_price <= 0.0 or current_price != 0.0:
+            detail_cache[store_url] = None
+            return None
+
+        verified = {
+            "original_price": original_price,
+            "current_price": current_price,
+            "discount_pct": 100,
+        }
+        detail_cache[store_url] = verified
+        return verified
+
+    def _collect_games(payload, seen, session):
         games = []
         items = None
         if isinstance(payload, dict):
@@ -688,6 +723,10 @@ def fetch_stove_free():
                 game = _build_game(item)
                 if not game:
                     continue
+                verified = _verify_detail_free_promo(session, game["store_url"])
+                if not verified:
+                    continue
+                game.update(verified)
                 if game["external_id"] in seen:
                     continue
                 seen.add(game["external_id"])
@@ -698,6 +737,10 @@ def fetch_stove_free():
             game = _build_game(item)
             if not game:
                 continue
+            verified = _verify_detail_free_promo(session, game["store_url"])
+            if not verified:
+                continue
+            game.update(verified)
             if game["external_id"] in seen:
                 continue
             seen.add(game["external_id"])
@@ -756,7 +799,7 @@ def fetch_stove_free():
         except Exception as e:
             log.warning("STOVE API fetch failed: %s (%s)", api_url, e)
             continue
-        results.extend(_collect_games(payload, seen))
+        results.extend(_collect_games(payload, seen, session))
         if results:
             log.info("STOVE free: %d game(s) found via API", len(results))
             return results
@@ -769,7 +812,7 @@ def fetch_stove_free():
             continue
 
         for payload in _extract_json_from_html(html):
-            results.extend(_collect_games(payload, seen))
+            results.extend(_collect_games(payload, seen, session))
         if results:
             log.info("STOVE free: %d game(s) found via embedded JSON", len(results))
             return results
@@ -824,6 +867,10 @@ def fetch_stove_free():
             if image_node is not None:
                 image_url = image_node.get("src") or image_node.get("data-src") or image_node.get("data-lazy-src") or ""
 
+            verified = _verify_detail_free_promo(session, _abs_url(href))
+            if not verified:
+                continue
+
             seen.add(external_id)
             results.append({
                 "external_id": external_id,
@@ -831,9 +878,9 @@ def fetch_stove_free():
                 "title": title,
                 "image_url": _abs_url(str(image_url).strip()),
                 "store_url": _abs_url(href),
-                "original_price": original_price,
-                "current_price": 0.0,
-                "discount_pct": 100,
+                "original_price": verified["original_price"],
+                "current_price": verified["current_price"],
+                "discount_pct": verified["discount_pct"],
                 "is_free_period": True,
                 "free_start": None,
                 "free_end": None,
