@@ -1,0 +1,14 @@
+.git/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.log
+*.tmp
+*.pid
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
