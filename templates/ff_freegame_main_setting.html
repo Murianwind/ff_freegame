@@ -3,8 +3,8 @@
 <div>
   {{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']]) }}
   <form id="setting">
-    {{ macros.setting_input_text('auto_interval', '수집 주기', value=arg.get('auto_interval', '0 */2 * * *'), desc=['기본값: 2시간마다', '크론 표현식 사용']) }}
-    {{ macros.setting_checkbox('auto_start', '시작 시 자동 스케줄 등록', value=arg.get('auto_start', 'False')) }}
+    {{ macros.setting_input_text('main_interval', '수집 주기', value=arg.get('main_interval', '0 */2 * * *'), desc=['기본값: 2시간마다', '크론 표현식 사용']) }}
+    {{ macros.setting_checkbox('main_auto_start', '시작 시 자동 스케줄 등록', value=arg.get('main_auto_start', 'False')) }}
     {{ macros.global_setting_scheduler_button(arg['scheduler'], arg['is_running']) }}
     {{ macros.setting_buttons([['ff_freegame_execute_btn', '1회 실행']], left='수동 실행') }}
     {{ macros.info_text('last_fetch_started', '최근 수집 시작', value=arg.get('last_fetch_started', '')) }}
@@ -15,7 +15,7 @@
     {{ macros.setting_input_text('notify_telegram_bot_token', 'Telegram Bot Token', value=arg.get('notify_telegram_bot_token', '')) }}
     {{ macros.setting_input_text('notify_telegram_chat_id', 'Telegram Chat ID', value=arg.get('notify_telegram_chat_id', '')) }}
     {{ macros.m_hr() }}
-    {{ macros.info_text('source_help', '활성 소스', value='체크된 무료 소스만 저장/표시됩니다.') }}
+    {{ macros.info_text('source_help', '활성 소스', value='체크한 무료 소스만 저장/표시합니다.') }}
     {{ macros.setting_checkbox('source_epic_enabled', 'Epic', value=arg.get('source_epic_enabled', 'True')) }}
     {{ macros.setting_checkbox('source_steam_enabled', 'Steam', value=arg.get('source_steam_enabled', 'True')) }}
     {{ macros.setting_checkbox('source_gog_enabled', 'GOG', value=arg.get('source_gog_enabled', 'True')) }}
@@ -30,9 +30,9 @@ const package_name = "{{ arg['package_name'] }}";
 
 $("body").on("change", "#globalSchedulerSwitchBtn", function () {
   $.ajax({
-    url: `/${package_name}/ajax/scheduler_toggle`,
+    url: `/${package_name}/ajax/scheduler`,
     type: "POST",
-    data: { scheduler: $(this).prop("checked") },
+    data: { sub: "main", scheduler: $(this).prop("checked") },
     dataType: "json",
   });
 });
@@ -40,8 +40,9 @@ $("body").on("change", "#globalSchedulerSwitchBtn", function () {
 $("body").on("click", "#ff_freegame_execute_btn", function (e) {
   e.preventDefault();
   $.ajax({
-    url: `/${package_name}/ajax/execute_once`,
+    url: `/${package_name}/ajax/one_execute`,
     type: "POST",
+    data: { sub: "main" },
     dataType: "json",
     success: function (ret) {
       if (ret.ret === "success") {

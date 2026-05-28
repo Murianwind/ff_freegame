@@ -6,7 +6,7 @@ from datetime import datetime
 import requests
 from flask import jsonify, render_template
 from plugin import PluginModuleBase
-from framework import F, Job, scheduler
+from framework import F
 
 from .model import ModelFetchLog, ModelFreeGameItem, ModelSetting
 from . import scraper
@@ -15,7 +15,6 @@ from .setup import P
 
 logger = P.logger
 package_name = P.package_name
-job_id = f"{package_name}_fetch"
 _fetch_lock = threading.Lock()
 
 SOURCE_LABELS = {
@@ -99,6 +98,8 @@ def _telegram_send(bot_token, chat_id, games):
 
 class Logic(PluginModuleBase):
     db_default = {
+        "main_auto_start": "False",
+        "main_interval": "0 */2 * * *",
         "auto_start": "False",
         "auto_interval": "0 */2 * * *",
         "notify_discord_webhook": "",
@@ -116,18 +117,24 @@ class Logic(PluginModuleBase):
     }
 
     def __init__(self, PM):
-        super().__init__(PM, name="main", first_menu="setting")
+        super().__init__(PM, name="main", first_menu="setting", scheduler_desc="FreeGame fetch")
 
     def plugin_load(self):
+        self._migrate_scheduler_settings()
         ModelFreeGameItem.ensure_schema()
-        if _truthy(ModelSetting.get("auto_start")):
-            self.scheduler_start()
+
+    def _migrate_scheduler_settings(self):
+        legacy_interval = str(ModelSetting.get("auto_interval") or "").strip()
+        if legacy_interval and str(ModelSetting.get("main_interval") or "").strip() in ["", "0 */2 * * *"]:
+            ModelSetting.set("main_interval", legacy_interval)
+        if _truthy(ModelSetting.get("auto_start")) and not _truthy(ModelSetting.get("main_auto_start")):
+            ModelSetting.set("main_auto_start", "True")
 
     def process_menu(self, sub, req):
         arg = ModelSetting.to_dict()
         arg["package_name"] = package_name
-        arg["scheduler"] = str(F.scheduler.is_include(job_id))
-        arg["is_running"] = str(F.scheduler.is_running(job_id))
+        arg["scheduler"] = str(F.scheduler.is_include(self.get_scheduler_name()))
+        arg["is_running"] = str(F.scheduler.is_running(self.get_scheduler_name()))
         arg["source_labels"] = SOURCE_LABELS
         arg["platform_counts"] = ModelFreeGameItem.get_platform_counts()
         if sub == "list":
@@ -140,21 +147,17 @@ class Logic(PluginModuleBase):
         try:
             if sub == "setting_save":
                 ret, _ = ModelSetting.setting_save(req)
-                if F.scheduler.is_include(job_id):
-                    Logic.scheduler_stop()
-                    Logic.scheduler_start()
-                elif _truthy(ModelSetting.get("auto_start")):
-                    Logic.scheduler_start()
+                self.setting_save_after(None)
                 ret["ret"] = "success"
                 return jsonify(ret)
             if sub == "scheduler_toggle":
                 if req.form["scheduler"] == "true":
-                    Logic.scheduler_start()
+                    self.P.logic.scheduler_start(self.name)
                 else:
-                    Logic.scheduler_stop()
+                    self.P.logic.scheduler_stop(self.name)
                 return jsonify({"ret": "success"})
             if sub == "execute_once":
-                threading.Thread(target=Logic.scheduler_function, daemon=True).start()
+                threading.Thread(target=self.scheduler_function, daemon=True).start()
                 return jsonify({"ret": "success"})
             if sub == "web_list":
                 ModelFreeGameItem.ensure_schema()
@@ -167,29 +170,14 @@ class Logic(PluginModuleBase):
             logger.error(traceback.format_exc())
             return jsonify({"ret": "error", "log": str(e)})
 
-    @staticmethod
-    def scheduler_start():
-        try:
-            interval = ModelSetting.get("auto_interval") or "0 */2 * * *"
-            if F.scheduler.is_include(job_id):
-                scheduler.remove_job(job_id)
-            job = Job(package_name, job_id, interval, Logic.scheduler_function, "FreeGame fetch", True)
-            scheduler.add_job_instance(job)
-            logger.info("FreeGame scheduler registered: id=%s interval=%s", job_id, interval)
-        except Exception as e:
-            logger.error("Exception:%s", e)
-            logger.error(traceback.format_exc())
+    def setting_save_after(self, change_list):
+        if F.scheduler.is_include(self.get_scheduler_name()):
+            self.P.logic.scheduler_stop(self.name)
+            self.P.logic.scheduler_start(self.name)
+        elif _truthy(ModelSetting.get("main_auto_start")):
+            self.P.logic.scheduler_start(self.name)
 
-    @staticmethod
-    def scheduler_stop():
-        try:
-            scheduler.remove_job(job_id)
-        except Exception as e:
-            logger.error("Exception:%s", e)
-            logger.error(traceback.format_exc())
-
-    @staticmethod
-    def scheduler_function():
+    def scheduler_function(self):
         if not _fetch_lock.acquire(blocking=False):
             logger.info("FreeGame fetch skipped: already running")
             return
@@ -221,7 +209,7 @@ class Logic(PluginModuleBase):
                 logger.info("FreeGame fetch completed: free_candidates=%d enabled_sources=%d", len(fresh_free_games), len(enabled_sources))
                 ModelFetchLog("all", "ok", f"free_candidates={len(fresh_free_games)} enabled_sources={len(enabled_sources)}", len(fresh_free_games)).save()
                 ModelSetting.set("last_fetch_finished", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                Logic._notify(fresh_free_games)
+                self._notify(fresh_free_games)
         except Exception as e:
             logger.error("Exception:%s", e)
             logger.error(traceback.format_exc())
@@ -229,8 +217,7 @@ class Logic(PluginModuleBase):
         finally:
             _fetch_lock.release()
 
-    @staticmethod
-    def _notify(games):
+    def _notify(self, games):
         if _truthy(ModelSetting.get("notify_enabled")) is False:
             return
         targets = list(games or [])
