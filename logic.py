@@ -96,7 +96,6 @@ def _telegram_send(bot_token, chat_id, games):
 
 
 class Logic(PluginModuleBase):
-    instance = None
     db_default = {
         "auto_start": "False",
         "auto_interval": "0 */2 * * *",
@@ -114,12 +113,11 @@ class Logic(PluginModuleBase):
 
     def __init__(self, PM):
         super().__init__(PM, name="main", first_menu="setting")
-        Logic.instance = self
 
     def plugin_load(self):
         ModelFreeGameItem.ensure_schema()
         if _truthy(ModelSetting.get("auto_start")):
-            self.scheduler_start()
+            Logic.scheduler_start()
 
     def process_menu(self, sub, req):
         arg = ModelSetting.to_dict()
@@ -139,20 +137,20 @@ class Logic(PluginModuleBase):
             if sub == "setting_save":
                 ret, _ = ModelSetting.setting_save(req)
                 if F.scheduler.is_include(package_name):
-                    self.scheduler_stop()
-                    self.scheduler_start()
+                    Logic.scheduler_stop()
+                    Logic.scheduler_start()
                 elif _truthy(ModelSetting.get("auto_start")):
-                    self.scheduler_start()
+                    Logic.scheduler_start()
                 ret["ret"] = "success"
                 return jsonify(ret)
             if sub == "scheduler_toggle":
                 if req.form["scheduler"] == "true":
-                    self.scheduler_start()
+                    Logic.scheduler_start()
                 else:
-                    self.scheduler_stop()
+                    Logic.scheduler_stop()
                 return jsonify({"ret": "success"})
             if sub == "execute_once":
-                threading.Thread(target=Logic.scheduler_function_static, daemon=True).start()
+                threading.Thread(target=Logic.scheduler_function, daemon=True).start()
                 return jsonify({"ret": "success"})
             if sub == "web_list":
                 ModelFreeGameItem.ensure_schema()
@@ -165,19 +163,21 @@ class Logic(PluginModuleBase):
             logger.error(traceback.format_exc())
             return jsonify({"ret": "error", "log": str(e)})
 
-    def scheduler_start(self):
+    @staticmethod
+    def scheduler_start():
         try:
             interval = ModelSetting.get("auto_interval") or "0 */2 * * *"
             if F.scheduler.is_include(package_name):
                 scheduler.remove_job(package_name)
-            job = Job(package_name, package_name, interval, Logic.scheduler_function_static, "FreeGame fetch", True)
+            job = Job(package_name, package_name, interval, Logic.scheduler_function, "FreeGame fetch", True)
             scheduler.add_job_instance(job)
             logger.info("FreeGame scheduler registered: %s", interval)
         except Exception as e:
             logger.error("Exception:%s", e)
             logger.error(traceback.format_exc())
 
-    def scheduler_stop(self):
+    @staticmethod
+    def scheduler_stop():
         try:
             scheduler.remove_job(package_name)
         except Exception as e:
@@ -185,44 +185,37 @@ class Logic(PluginModuleBase):
             logger.error(traceback.format_exc())
 
     @staticmethod
-    def scheduler_function_static():
-        logic = Logic.instance
-        if logic is None:
-            logger.error("FreeGame scheduler skipped: Logic instance is not initialized")
-            return
-        with F.app.app_context():
-            logic.scheduler_function()
-
-    def scheduler_function(self):
+    def scheduler_function():
         if not _fetch_lock.acquire(blocking=False):
             logger.info("FreeGame fetch skipped: already running")
             return
         try:
-            logger.info("FreeGame scheduled fetch started")
-            ModelFreeGameItem.ensure_schema()
-            enabled_sources = set(_enabled_sources())
-            results = scraper.fetch_all()
-            grouped = _split_source_payload(results)
-            fresh_free_games = []
+            with F.app.app_context():
+                logger.info("FreeGame scheduled fetch started")
+                ModelFreeGameItem.ensure_schema()
+                enabled_sources = set(_enabled_sources())
+                results = scraper.fetch_all()
+                grouped = _split_source_payload(results)
+                fresh_free_games = []
 
-            for legacy_source in ["humble", "fanatical", "gmg", "directgames"]:
-                ModelFreeGameItem.replace_source_items(legacy_source, [])
+                for legacy_source in ["humble", "fanatical", "gmg", "directgames"]:
+                    ModelFreeGameItem.replace_source_items(legacy_source, [])
 
-            for source, items in grouped.items():
-                if source not in enabled_sources:
-                    continue
-                ModelFreeGameItem.replace_source_items(source, items)
-                ModelFetchLog(source, "ok", "", len(items)).save()
-                logger.info("FreeGame source=%s saved=%d", source, len(items))
-                fresh_free_games.extend(items)
+                for source, items in grouped.items():
+                    if source not in enabled_sources:
+                        continue
+                    ModelFreeGameItem.replace_source_items(source, items)
+                    ModelFetchLog(source, "ok", "", len(items)).save()
+                    logger.info("FreeGame source=%s saved=%d", source, len(items))
+                    fresh_free_games.extend(items)
 
-            disabled_sources = [source for source in SOURCE_LABELS if source not in enabled_sources]
-            if disabled_sources:
-                ModelFreeGameItem.delete_not_in_sources(enabled_sources)
+                disabled_sources = [source for source in SOURCE_LABELS if source not in enabled_sources]
+                if disabled_sources:
+                    ModelFreeGameItem.delete_not_in_sources(enabled_sources)
 
-            logger.info("FreeGame fetch completed: free_candidates=%d enabled_sources=%d", len(fresh_free_games), len(enabled_sources))
-            ModelFetchLog("all", "ok", f"free_candidates={len(fresh_free_games)} enabled_sources={len(enabled_sources)}", len(fresh_free_games)).save()
-            self._notify(fresh_free_games)
+                logger.info("FreeGame fetch completed: free_candidates=%d enabled_sources=%d", len(fresh_free_games), len(enabled_sources))
+                ModelFetchLog("all", "ok", f"free_candidates={len(fresh_free_games)} enabled_sources={len(enabled_sources)}", len(fresh_free_games)).save()
+                Logic._notify(fresh_free_games)
         except Exception as e:
             logger.error("Exception:%s", e)
             logger.error(traceback.format_exc())
@@ -230,7 +223,8 @@ class Logic(PluginModuleBase):
         finally:
             _fetch_lock.release()
 
-    def _notify(self, games):
+    @staticmethod
+    def _notify(games):
         if _truthy(ModelSetting.get("notify_enabled")) is False:
             return
         targets = list(games or [])
