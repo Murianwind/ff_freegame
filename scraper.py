@@ -48,6 +48,43 @@ _STORE_MAP = {
 }
 _CS_DEDICATED_STORE_IDS = {"1", "7", "30"}
 _MC_CACHE = {}
+_TITLE_SUFFIX_RE = re.compile(
+    r"\b("
+    r"complete|deluxe|ultimate|definitive|gold|premium|collector'?s|anniversary|remastered|remaster|"
+    r"goty|game\s+of\s+the\s+year|enhanced|extended|special|standard|starter|pack|bundle|edition"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_game_title(title):
+    text = str(title or "").lower()
+    text = re.sub(r"[™®©]", " ", text)
+    text = re.sub(r"[\[\(].*?[\]\)]", " ", text)
+    text = re.sub(r"\b\d{4}\b", " ", text)
+    text = re.sub(r"[:\-–—|_/]+", " ", text)
+    text = _TITLE_SUFFIX_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _title_candidates(title):
+    base = str(title or "").strip()
+    normalized = _normalize_game_title(base)
+    variants = []
+    for item in (base, normalized):
+        item = str(item or "").strip()
+        if item and item not in variants:
+            variants.append(item)
+    if ":" in base:
+        head = _normalize_game_title(base.split(":", 1)[0])
+        if head and head not in variants:
+            variants.append(head)
+    if "-" in base:
+        head = _normalize_game_title(base.split("-", 1)[0])
+        if head and head not in variants:
+            variants.append(head)
+    return variants
 
 
 def _metacritic_from_deal(d):
@@ -61,29 +98,50 @@ def _metacritic_from_deal(d):
     return score, link
 
 
+def _deal_match_score(deal, target):
+    deal_title = _normalize_game_title(deal.get("title") or "")
+    if not deal_title or not target:
+        return 0
+    if deal_title == target:
+        return 100
+    target_words = set(target.split())
+    deal_words = set(deal_title.split())
+    if len(target_words) <= 1:
+        return 0
+    if deal_title.startswith(target) or target.startswith(deal_title):
+        return 80
+    if not target_words or not deal_words:
+        return 0
+    overlap = len(target_words & deal_words)
+    return int((overlap / max(len(target_words), len(deal_words))) * 70)
+
+
 def _cheapshark_metacritic_lookup(title="", steam_appid=None):
     key = f"{steam_appid or ''}:{title or ''}".lower()
     if key in _MC_CACHE:
         return _MC_CACHE[key]
-    params = {"pageSize": 5}
-    if steam_appid:
-        params["steamAppID"] = steam_appid
-    elif title:
-        params["title"] = title
-    else:
+    if not (steam_appid or title):
         _MC_CACHE[key] = (0, "")
         return _MC_CACHE[key]
     try:
-        deals = _get(f"{_CS_BASE}/deals", params=params).json()
-        normalized = re.sub(r"\s+", " ", str(title or "").strip()).lower()
         best = None
-        for deal in deals or []:
-            deal_title = re.sub(r"\s+", " ", str(deal.get("title") or "").strip()).lower()
-            if steam_appid or deal_title == normalized:
-                best = deal
-                break
-        if best is None and deals:
-            best = deals[0]
+        if steam_appid:
+            deals = _get(f"{_CS_BASE}/deals", params={"pageSize": 5, "steamAppID": steam_appid}).json()
+            best = next((deal for deal in deals or [] if int(float(deal.get("metacriticScore") or 0)) > 0), None)
+            if best is None and deals:
+                best = deals[0]
+        if best is None:
+            for candidate in _title_candidates(title):
+                deals = _get(f"{_CS_BASE}/deals", params={"pageSize": 12, "title": candidate}).json()
+                target = _normalize_game_title(candidate)
+                ranked = sorted(
+                    (deal for deal in deals or [] if int(float(deal.get("metacriticScore") or 0)) > 0),
+                    key=lambda deal: _deal_match_score(deal, target),
+                    reverse=True,
+                )
+                if ranked and _deal_match_score(ranked[0], target) >= 45:
+                    best = ranked[0]
+                    break
         _MC_CACHE[key] = _metacritic_from_deal(best or {})
     except Exception as e:
         log.debug("CheapShark metacritic lookup failed title=%s appid=%s: %s", title, steam_appid, e)
