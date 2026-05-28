@@ -136,6 +136,11 @@ class Logic(PluginModuleBase):
         try:
             if sub == "setting_save":
                 ret, _ = ModelSetting.setting_save(req)
+                if F.scheduler.is_include(package_name):
+                    self.scheduler_stop()
+                    self.scheduler_start()
+                elif _truthy(ModelSetting.get("auto_start")):
+                    self.scheduler_start()
                 ret["ret"] = "success"
                 return jsonify(ret)
             if sub == "scheduler_toggle":
@@ -161,8 +166,11 @@ class Logic(PluginModuleBase):
     def scheduler_start(self):
         try:
             interval = ModelSetting.get("auto_interval") or "0 */2 * * *"
+            if F.scheduler.is_include(package_name):
+                scheduler.remove_job(package_name)
             job = Job(package_name, package_name, interval, self.scheduler_function, "FreeGame fetch", True)
             scheduler.add_job_instance(job)
+            logger.info("FreeGame scheduler registered: %s", interval)
         except Exception as e:
             logger.error("Exception:%s", e)
             logger.error(traceback.format_exc())
@@ -219,6 +227,14 @@ class Logic(PluginModuleBase):
         telegram_bot_token = ModelSetting.get("notify_telegram_bot_token")
         telegram_chat_id = ModelSetting.get("notify_telegram_chat_id")
         if discord_webhook:
-            _discord_send(discord_webhook, targets)
+            try:
+                _discord_send(discord_webhook, targets)
+                logger.info("FreeGame Discord notification sent: %d", min(len(targets), 10))
+            except Exception as e:
+                logger.error("FreeGame Discord notification failed: %s", e)
         if telegram_bot_token and telegram_chat_id:
-            _telegram_send(telegram_bot_token, telegram_chat_id, targets)
+            try:
+                _telegram_send(telegram_bot_token, telegram_chat_id, targets)
+                logger.info("FreeGame Telegram notification sent: %d", min(len(targets), 10))
+            except Exception as e:
+                logger.error("FreeGame Telegram notification failed: %s", e)
