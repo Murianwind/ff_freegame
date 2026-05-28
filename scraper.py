@@ -47,6 +47,48 @@ _STORE_MAP = {
     "30": "indiegala",
 }
 _CS_DEDICATED_STORE_IDS = {"1", "7", "30"}
+_MC_CACHE = {}
+
+
+def _metacritic_from_deal(d):
+    try:
+        score = int(float(d.get("metacriticScore") or 0))
+    except Exception:
+        score = 0
+    link = d.get("metacriticLink") or ""
+    if link and link.startswith("/"):
+        link = "https://www.metacritic.com" + link
+    return score, link
+
+
+def _cheapshark_metacritic_lookup(title="", steam_appid=None):
+    key = f"{steam_appid or ''}:{title or ''}".lower()
+    if key in _MC_CACHE:
+        return _MC_CACHE[key]
+    params = {"pageSize": 5}
+    if steam_appid:
+        params["steamAppID"] = steam_appid
+    elif title:
+        params["title"] = title
+    else:
+        _MC_CACHE[key] = (0, "")
+        return _MC_CACHE[key]
+    try:
+        deals = _get(f"{_CS_BASE}/deals", params=params).json()
+        normalized = re.sub(r"\s+", " ", str(title or "").strip()).lower()
+        best = None
+        for deal in deals or []:
+            deal_title = re.sub(r"\s+", " ", str(deal.get("title") or "").strip()).lower()
+            if steam_appid or deal_title == normalized:
+                best = deal
+                break
+        if best is None and deals:
+            best = deals[0]
+        _MC_CACHE[key] = _metacritic_from_deal(best or {})
+    except Exception as e:
+        log.debug("CheapShark metacritic lookup failed title=%s appid=%s: %s", title, steam_appid, e)
+        _MC_CACHE[key] = (0, "")
+    return _MC_CACHE[key]
 
 
 def _cs_deal(d, override_platform=None):
@@ -75,6 +117,7 @@ def _cs_deal(d, override_platform=None):
     deal_id = d.get("dealID", "")
     game_id = d.get("gameID", "")
     title = d.get("title", "")
+    mc_score, mc_url = _metacritic_from_deal(d)
     is_free_period = curr == 0.0 and orig > 0.0
     return {
         "external_id": f"cs_{game_id}_{store_id}",
@@ -91,6 +134,8 @@ def _cs_deal(d, override_platform=None):
         "genres": [],
         "rating": rating,
         "rating_count": rc,
+        "metacritic_score": mc_score,
+        "metacritic_url": mc_url,
     }
 
 
@@ -223,6 +268,7 @@ def _steam_game_dict(appid: int, detail: dict):
     is_free_period = (original > 0.0 and (current == 0.0 or discount == 100)) or free_weekend
     if not is_free_period:
         return None
+    mc_score, mc_url = _cheapshark_metacritic_lookup(detail.get("name", ""), steam_appid=appid)
 
     return {
         "external_id":    f"steam_{appid}",
@@ -237,6 +283,8 @@ def _steam_game_dict(appid: int, detail: dict):
         "free_start": None, "free_end": None,
         "genres":         genres,
         "rating": 0.0, "rating_count": rec.get("total", 0),
+        "metacritic_score": mc_score,
+        "metacritic_url": mc_url,
     }
 
 
@@ -965,8 +1013,18 @@ def _fetch_stove_deals_legacy():
     return results
 
 
+def _enrich_metacritic(items):
+    for item in items or []:
+        if int(item.get("metacritic_score") or 0) > 0:
+            continue
+        score, url = _cheapshark_metacritic_lookup(item.get("title") or "")
+        item["metacritic_score"] = score
+        item["metacritic_url"] = url
+    return items
+
+
 def fetch_all():
-    return {
+    data = {
         "epic": fetch_epic_free(),
         "steam": fetch_steam_free(),
         "cheapshark": fetch_cheapshark_deals(),
@@ -975,6 +1033,9 @@ def fetch_all():
         "indiegala_free": fetch_indiegala_free(),
         "stove": fetch_stove_deals(),
     }
+    for items in data.values():
+        _enrich_metacritic(items)
+    return data
 
 
 def _parse_dt(s):

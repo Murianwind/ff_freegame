@@ -145,10 +145,30 @@
     font-weight: 600;
   }
   .ffg-rating {
-    min-width: 54px;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+    min-width: 74px;
     text-align: right;
     color: #8e96c4;
     font-size: 12px;
+  }
+  .ffg-mc {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 7px;
+    border-radius: 8px;
+    background: rgba(250, 204, 21, .14);
+    border: 1px solid rgba(250, 204, 21, .32);
+    color: #fde68a;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .ffg-steam-rating {
+    color: #8e96c4;
+    line-height: 1;
   }
   .ffg-empty {
     padding: 48px 16px;
@@ -223,7 +243,11 @@ function gameCard(item) {
   const genres = Array.isArray(item.genres) ? item.genres.slice(0, 2) : [];
   const genreHtml = genres.map((genre) => `<span class="ffg-genre">${escapeHtml(genre)}</span>`).join("");
   const ratingHtml = item.rating && Number(item.rating) > 0
-    ? `${Math.round(Number(item.rating))}`
+    ? `<span class="ffg-steam-rating">Steam ${Math.round(Number(item.rating))}</span>`
+    : "";
+  const mcScore = Number(item.metacritic_score || 0);
+  const mcHtml = mcScore > 0
+    ? `<span class="ffg-mc" title="Metacritic score">MC ${Math.round(mcScore)}</span>`
     : "";
 
   return `
@@ -239,7 +263,7 @@ function gameCard(item) {
         <div class="ffg-genres">${genreHtml}</div>
         <div class="ffg-meta">
           <div class="ffg-countdown"><i class="fa fa-clock-o"></i><span>${escapeHtml(formatCountdown(item.free_end))}</span></div>
-          <div class="ffg-rating">${ratingHtml}</div>
+          <div class="ffg-rating">${mcHtml}${ratingHtml}</div>
         </div>
       </div>
     </article>

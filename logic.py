@@ -59,7 +59,10 @@ def _discord_send(webhook_url, games):
         title = game.get("title") or "Unknown"
         platform = SOURCE_LABELS.get(game.get("platform"), game.get("platform"))
         store_url = game.get("store_url") or ""
+        score = int(game.get("metacritic_score") or 0)
         line = f"**{title}** ({platform})"
+        if score > 0:
+            line += f" · MC {score}"
         if store_url:
             line += f"\n{store_url}"
         lines.append(line)
@@ -73,7 +76,10 @@ def _telegram_send(bot_token, chat_id, games):
         title = game.get("title") or "Unknown"
         platform = SOURCE_LABELS.get(game.get("platform"), game.get("platform"))
         store_url = game.get("store_url") or ""
+        score = int(game.get("metacritic_score") or 0)
         line = f"<b>{title}</b> ({platform})"
+        if score > 0:
+            line += f" · MC {score}"
         if store_url:
             line += f"\n{store_url}"
         lines.append(line)
@@ -109,6 +115,7 @@ class Logic(PluginModuleBase):
         super().__init__(PM, name="main", first_menu="setting")
 
     def plugin_load(self):
+        ModelFreeGameItem.ensure_schema()
         if _truthy(ModelSetting.get("auto_start")):
             self.scheduler_start()
 
@@ -141,6 +148,7 @@ class Logic(PluginModuleBase):
                 threading.Thread(target=self.scheduler_function, daemon=True).start()
                 return jsonify({"ret": "success"})
             if sub == "web_list":
+                ModelFreeGameItem.ensure_schema()
                 return jsonify(ModelFreeGameItem.web_list(req))
             if sub == "platform_counts":
                 return jsonify({"ret": "success", "data": ModelFreeGameItem.get_platform_counts()})
@@ -171,6 +179,7 @@ class Logic(PluginModuleBase):
             logger.info("FreeGame fetch skipped: already running")
             return
         try:
+            ModelFreeGameItem.ensure_schema()
             enabled_sources = set(_enabled_sources())
             results = scraper.fetch_all()
             grouped = _split_source_payload(results)

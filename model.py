@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 
 from sqlalchemy import desc
+from sqlalchemy import text
 
 from .setup import *
 
@@ -30,6 +31,8 @@ class ModelFreeGameItem(ModelBase):
     free_end = db.Column(db.String)
     rating = db.Column(db.Float)
     rating_count = db.Column(db.Integer)
+    metacritic_score = db.Column(db.Integer)
+    metacritic_url = db.Column(db.String)
     genres_json = db.Column(db.Text)
 
     def __init__(self):
@@ -60,6 +63,8 @@ class ModelFreeGameItem(ModelBase):
             "free_end": self.free_end,
             "rating": self.rating,
             "rating_count": self.rating_count,
+            "metacritic_score": self.metacritic_score,
+            "metacritic_url": self.metacritic_url,
             "genres": self.genres,
             "updated_time": self.updated_time.strftime("%Y-%m-%d %H:%M:%S") if self.updated_time else "",
         }
@@ -85,9 +90,29 @@ class ModelFreeGameItem(ModelBase):
         row.free_end = str(data.get("free_end") or "")
         row.rating = float(data.get("rating") or 0)
         row.rating_count = int(data.get("rating_count") or 0)
+        row.metacritic_score = int(data.get("metacritic_score") or 0)
+        row.metacritic_url = str(data.get("metacritic_url") or "")
         row.genres_json = json.dumps(data.get("genres") or [], ensure_ascii=False)
         row.updated_time = datetime.now()
         return row
+
+    @classmethod
+    def ensure_schema(cls):
+        with F.app.app_context():
+            try:
+                try:
+                    engine = F.db.get_engine(F.app, bind=cls.__bind_key__)
+                except TypeError:
+                    engine = F.db.engines[cls.__bind_key__]
+                with engine.begin() as conn:
+                    rows = conn.execute(text(f"PRAGMA table_info({cls.__tablename__})")).fetchall()
+                    columns = {row[1] for row in rows}
+                    if "metacritic_score" not in columns:
+                        conn.execute(text(f"ALTER TABLE {cls.__tablename__} ADD COLUMN metacritic_score INTEGER"))
+                    if "metacritic_url" not in columns:
+                        conn.execute(text(f"ALTER TABLE {cls.__tablename__} ADD COLUMN metacritic_url VARCHAR"))
+            except Exception:
+                P.logger.exception("ff_freegame schema migration failed")
 
     @classmethod
     def delete_not_in_sources(cls, sources):
