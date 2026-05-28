@@ -5,7 +5,7 @@ import traceback
 import requests
 from flask import jsonify, render_template
 from plugin import PluginModuleBase
-from framework import F, Job, scheduler
+from framework import F, Job
 
 from .model import ModelFetchLog, ModelFreeGameItem, ModelSetting
 from . import scraper
@@ -96,7 +96,6 @@ def _telegram_send(bot_token, chat_id, games):
 
 
 class Logic(PluginModuleBase):
-    instance = None
     db_default = {
         "auto_start": "False",
         "auto_interval": "0 */2 * * *",
@@ -114,7 +113,6 @@ class Logic(PluginModuleBase):
 
     def __init__(self, PM):
         super().__init__(PM, name="main", first_menu="setting")
-        Logic.instance = self
 
     def plugin_load(self):
         ModelFreeGameItem.ensure_schema()
@@ -152,7 +150,7 @@ class Logic(PluginModuleBase):
                     self.scheduler_stop()
                 return jsonify({"ret": "success"})
             if sub == "execute_once":
-                Logic.execute_once()
+                threading.Thread(target=self.scheduler_function, daemon=True).start()
                 return jsonify({"ret": "success"})
             if sub == "web_list":
                 ModelFreeGameItem.ensure_schema()
@@ -169,9 +167,9 @@ class Logic(PluginModuleBase):
         try:
             interval = ModelSetting.get("auto_interval") or "0 */2 * * *"
             if F.scheduler.is_include(package_name):
-                scheduler.remove_job(package_name)
-            job = Job(package_name, package_name, interval, Logic.execute_once, "FreeGame fetch", True)
-            scheduler.add_job_instance(job)
+                F.scheduler.remove_job(package_name)
+            job = Job(package_name, package_name, interval, self.scheduler_function, "FreeGame fetch", True)
+            F.scheduler.add_job_instance(job)
             logger.info("FreeGame scheduler registered: %s", interval)
         except Exception as e:
             logger.error("Exception:%s", e)
@@ -179,23 +177,10 @@ class Logic(PluginModuleBase):
 
     def scheduler_stop(self):
         try:
-            scheduler.remove_job(package_name)
+            F.scheduler.remove_job(package_name)
         except Exception as e:
             logger.error("Exception:%s", e)
             logger.error(traceback.format_exc())
-
-    @staticmethod
-    def execute_once():
-        threading.Thread(target=Logic.scheduler_function_static, daemon=True).start()
-
-    @staticmethod
-    def scheduler_function_static():
-        logic = Logic.instance
-        if logic is None:
-            logger.error("FreeGame scheduler skipped: Logic instance is not initialized")
-            return
-        with F.app.app_context():
-            logic.scheduler_function()
 
     def scheduler_function(self):
         if not _fetch_lock.acquire(blocking=False):
