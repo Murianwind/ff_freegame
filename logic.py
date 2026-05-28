@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import threading
 import traceback
+from datetime import datetime, timedelta
 
 import requests
 from flask import jsonify, render_template
@@ -15,6 +16,9 @@ from .setup import P
 logger = P.logger
 package_name = P.package_name
 _fetch_lock = threading.Lock()
+_scheduler_lock = threading.Lock()
+_scheduler_stop_event = threading.Event()
+_scheduler_thread = None
 
 SOURCE_LABELS = {
     "epic": "Epic",
@@ -51,6 +55,48 @@ def _split_source_payload(results):
             item["platform"] = normalized_source
             grouped[normalized_source].append(item)
     return grouped
+
+
+def _next_run_wait(interval):
+    now = datetime.now()
+    try:
+        from croniter import croniter
+
+        next_run = croniter(interval, now).get_next(datetime)
+        return max(1, int((next_run - now).total_seconds()))
+    except Exception:
+        pass
+
+    parts = str(interval or "").split()
+    if len(parts) == 5:
+        minute, hour = parts[0], parts[1]
+        if minute == "*" and hour == "*":
+            return 60
+        if minute.startswith("*/") and hour == "*":
+            try:
+                return max(60, int(minute[2:]) * 60)
+            except Exception:
+                return 60
+        if minute.isdigit() and hour.startswith("*/"):
+            try:
+                target_minute = int(minute)
+                step_hour = int(hour[2:])
+                candidate = now.replace(second=0, microsecond=0)
+                for _ in range(24 * 60):
+                    candidate += timedelta(minutes=1)
+                    if candidate.minute == target_minute and candidate.hour % step_hour == 0:
+                        return max(1, int((candidate - now).total_seconds()))
+            except Exception:
+                return 60
+    return 60
+
+
+def _scheduler_loop(interval):
+    logger.info("FreeGame internal scheduler loop started: %s", interval)
+    while not _scheduler_stop_event.wait(_next_run_wait(interval)):
+        logger.info("FreeGame internal scheduler tick")
+        Logic.scheduler_function()
+    logger.info("FreeGame internal scheduler loop stopped")
 
 
 def _discord_send(webhook_url, games):
@@ -119,6 +165,9 @@ class Logic(PluginModuleBase):
         if _truthy(ModelSetting.get("auto_start")):
             Logic.scheduler_start()
 
+    def plugin_unload(self):
+        Logic.scheduler_stop()
+
     def process_menu(self, sub, req):
         arg = ModelSetting.to_dict()
         arg["package_name"] = package_name
@@ -165,12 +214,20 @@ class Logic(PluginModuleBase):
 
     @staticmethod
     def scheduler_start():
+        global _scheduler_thread
         try:
             interval = ModelSetting.get("auto_interval") or "0 */2 * * *"
             if F.scheduler.is_include(package_name):
                 scheduler.remove_job(package_name)
             job = Job(package_name, package_name, interval, Logic.scheduler_function, "FreeGame fetch", True)
             scheduler.add_job_instance(job)
+            with _scheduler_lock:
+                if _scheduler_thread is not None and _scheduler_thread.is_alive():
+                    _scheduler_stop_event.set()
+                    _scheduler_thread.join(timeout=2)
+                _scheduler_stop_event.clear()
+                _scheduler_thread = threading.Thread(target=_scheduler_loop, args=(interval,), daemon=True)
+                _scheduler_thread.start()
             logger.info("FreeGame scheduler registered: %s", interval)
         except Exception as e:
             logger.error("Exception:%s", e)
@@ -178,8 +235,18 @@ class Logic(PluginModuleBase):
 
     @staticmethod
     def scheduler_stop():
+        global _scheduler_thread
         try:
-            scheduler.remove_job(package_name)
+            if F.scheduler.is_include(package_name):
+                scheduler.remove_job(package_name)
+        except Exception as e:
+            logger.error("FreeGame framework scheduler stop failed: %s", e)
+        try:
+            with _scheduler_lock:
+                _scheduler_stop_event.set()
+                if _scheduler_thread is not None and _scheduler_thread.is_alive():
+                    _scheduler_thread.join(timeout=2)
+                _scheduler_thread = None
         except Exception as e:
             logger.error("Exception:%s", e)
             logger.error(traceback.format_exc())
