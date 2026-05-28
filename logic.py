@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import threading
 import traceback
+from datetime import datetime
 
 import requests
 from flask import jsonify, render_template
@@ -14,6 +15,7 @@ from .setup import P
 
 logger = P.logger
 package_name = P.package_name
+job_id = f"{package_name}_fetch"
 _fetch_lock = threading.Lock()
 
 SOURCE_LABELS = {
@@ -109,6 +111,8 @@ class Logic(PluginModuleBase):
         "source_indiegala_enabled": "True",
         "source_stove_enabled": "True",
         "source_cheapshark_enabled": "True",
+        "last_fetch_started": "",
+        "last_fetch_finished": "",
     }
 
     def __init__(self, PM):
@@ -122,8 +126,8 @@ class Logic(PluginModuleBase):
     def process_menu(self, sub, req):
         arg = ModelSetting.to_dict()
         arg["package_name"] = package_name
-        arg["scheduler"] = str(F.scheduler.is_include(package_name))
-        arg["is_running"] = str(F.scheduler.is_running(package_name))
+        arg["scheduler"] = str(F.scheduler.is_include(job_id))
+        arg["is_running"] = str(F.scheduler.is_running(job_id))
         arg["source_labels"] = SOURCE_LABELS
         arg["platform_counts"] = ModelFreeGameItem.get_platform_counts()
         if sub == "list":
@@ -136,7 +140,7 @@ class Logic(PluginModuleBase):
         try:
             if sub == "setting_save":
                 ret, _ = ModelSetting.setting_save(req)
-                if F.scheduler.is_include(package_name):
+                if F.scheduler.is_include(job_id):
                     Logic.scheduler_stop()
                     Logic.scheduler_start()
                 elif _truthy(ModelSetting.get("auto_start")):
@@ -167,11 +171,11 @@ class Logic(PluginModuleBase):
     def scheduler_start():
         try:
             interval = ModelSetting.get("auto_interval") or "0 */2 * * *"
-            if F.scheduler.is_include(package_name):
-                scheduler.remove_job(package_name)
-            job = Job(package_name, package_name, interval, Logic.scheduler_function, "FreeGame fetch", True)
+            if F.scheduler.is_include(job_id):
+                scheduler.remove_job(job_id)
+            job = Job(package_name, job_id, interval, Logic.scheduler_function, "FreeGame fetch", True)
             scheduler.add_job_instance(job)
-            logger.info("FreeGame scheduler registered: %s", interval)
+            logger.info("FreeGame scheduler registered: id=%s interval=%s", job_id, interval)
         except Exception as e:
             logger.error("Exception:%s", e)
             logger.error(traceback.format_exc())
@@ -179,7 +183,7 @@ class Logic(PluginModuleBase):
     @staticmethod
     def scheduler_stop():
         try:
-            scheduler.remove_job(package_name)
+            scheduler.remove_job(job_id)
         except Exception as e:
             logger.error("Exception:%s", e)
             logger.error(traceback.format_exc())
@@ -192,6 +196,7 @@ class Logic(PluginModuleBase):
         try:
             with F.app.app_context():
                 logger.info("FreeGame scheduled fetch started")
+                ModelSetting.set("last_fetch_started", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                 ModelFreeGameItem.ensure_schema()
                 enabled_sources = set(_enabled_sources())
                 results = scraper.fetch_all()
@@ -215,6 +220,7 @@ class Logic(PluginModuleBase):
 
                 logger.info("FreeGame fetch completed: free_candidates=%d enabled_sources=%d", len(fresh_free_games), len(enabled_sources))
                 ModelFetchLog("all", "ok", f"free_candidates={len(fresh_free_games)} enabled_sources={len(enabled_sources)}", len(fresh_free_games)).save()
+                ModelSetting.set("last_fetch_finished", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                 Logic._notify(fresh_free_games)
         except Exception as e:
             logger.error("Exception:%s", e)
