@@ -83,6 +83,13 @@
     background: #16a34a;
     color: #fff;
   }
+  .ffg-badge-new {
+    left: 10px;
+    bottom: 10px;
+    background: #ef4444;
+    color: #fff;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, .18);
+  }
   .ffg-platform-epic { background: #2f313a; }
   .ffg-platform-steam { background: #1b4b91; color: #fff; }
   .ffg-platform-gog { background: #4a2876; }
@@ -249,6 +256,9 @@ function gameCard(item) {
   const mcHtml = mcScore > 0
     ? `<span class="ffg-mc" title="Metacritic score">MC ${Math.round(mcScore)}</span>`
     : "";
+  const newHtml = item.is_new
+    ? `<span class="ffg-badge ffg-badge-new">NEW</span>`
+    : "";
 
   return `
     <article class="ffg-card" data-url="${escapeHtml(item.store_url || "")}">
@@ -256,6 +266,7 @@ function gameCard(item) {
         ${imageHtml}
         <span class="ffg-badge ffg-badge-platform ${platformClass(item.platform)}">${platformLabel(item.platform)}</span>
         <span class="ffg-badge ffg-badge-free">FREE</span>
+        ${newHtml}
       </div>
       <div class="ffg-body">
         <div class="ffg-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>

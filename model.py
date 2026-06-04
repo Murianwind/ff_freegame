@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import desc
 from sqlalchemy import text
@@ -49,6 +49,7 @@ class ModelFreeGameItem(ModelBase):
             return []
 
     def as_dict(self):
+        is_new = bool(self.created_time and self.created_time >= datetime.now() - timedelta(hours=48))
         return {
             "id": self.id,
             "external_id": self.external_id,
@@ -66,6 +67,8 @@ class ModelFreeGameItem(ModelBase):
             "metacritic_score": self.metacritic_score,
             "metacritic_url": self.metacritic_url,
             "genres": self.genres,
+            "is_new": is_new,
+            "created_time": self.created_time.strftime("%Y-%m-%d %H:%M:%S") if self.created_time else "",
             "updated_time": self.updated_time.strftime("%Y-%m-%d %H:%M:%S") if self.updated_time else "",
         }
 
@@ -127,8 +130,16 @@ class ModelFreeGameItem(ModelBase):
     @classmethod
     def replace_source_items(cls, source_name, items):
         with F.app.app_context():
-            F.db.session.query(cls).filter_by(platform=source_name).delete(synchronize_session=False)
-            F.db.session.commit()
+            incoming_ids = {
+                str(item.get("external_id") or "")
+                for item in items
+                if str(item.get("external_id") or "")
+            }
+            query = F.db.session.query(cls).filter_by(platform=source_name)
+            if incoming_ids:
+                query.filter(~cls.external_id.in_(incoming_ids)).delete(synchronize_session=False)
+            else:
+                query.delete(synchronize_session=False)
             for item in items:
                 cls.upsert(item)
             F.db.session.commit()
