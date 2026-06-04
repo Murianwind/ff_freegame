@@ -124,6 +124,7 @@ class Logic(PluginModuleBase):
     def plugin_load(self):
         self._migrate_scheduler_settings()
         ModelFreeGameItem.ensure_schema()
+        ModelFreeGameItem.reset_existing_new_flags()
 
     def _migrate_scheduler_settings(self):
         legacy_interval = str(ModelSetting.get("auto_interval") or "").strip()

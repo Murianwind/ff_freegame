@@ -118,6 +118,25 @@ class ModelFreeGameItem(ModelBase):
                 P.logger.exception("ff_freegame schema migration failed")
 
     @classmethod
+    def reset_existing_new_flags(cls):
+        with F.app.app_context():
+            try:
+                cutoff = datetime.now() - timedelta(hours=49)
+                updated = (
+                    F.db.session.query(cls)
+                    .filter((cls.created_time == None) | (cls.created_time > cutoff))
+                    .update({cls.created_time: cutoff}, synchronize_session=False)
+                )
+                F.db.session.commit()
+                if updated:
+                    P.logger.info("ff_freegame reset existing NEW flags: %d", updated)
+                return updated
+            except Exception:
+                F.db.session.rollback()
+                P.logger.exception("ff_freegame reset existing NEW flags failed")
+                return 0
+
+    @classmethod
     def delete_not_in_sources(cls, sources):
         with F.app.app_context():
             query = F.db.session.query(cls)
