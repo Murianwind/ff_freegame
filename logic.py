@@ -57,11 +57,12 @@ def _split_source_payload(results):
 def _discord_send(webhook_url, games):
     lines = []
     for game in games[:10]:
+        prefix = "🆕 NEW " if game.get("is_new") else ""
         title = game.get("title") or "Unknown"
         platform = SOURCE_LABELS.get(game.get("platform"), game.get("platform"))
         store_url = game.get("store_url") or ""
         score = int(game.get("metacritic_score") or 0)
-        line = f"**{title}** ({platform})"
+        line = f"{prefix}**{title}** ({platform})"
         if score > 0:
             line += f" · MC {score}"
         if store_url:
@@ -74,11 +75,12 @@ def _discord_send(webhook_url, games):
 def _telegram_send(bot_token, chat_id, games):
     lines = []
     for game in games[:10]:
+        prefix = "🆕 NEW " if game.get("is_new") else ""
         title = game.get("title") or "Unknown"
         platform = SOURCE_LABELS.get(game.get("platform"), game.get("platform"))
         store_url = game.get("store_url") or ""
         score = int(game.get("metacritic_score") or 0)
-        line = f"<b>{title}</b> ({platform})"
+        line = f"{prefix}<b>{title}</b> ({platform})"
         if score > 0:
             line += f" · MC {score}"
         if store_url:
@@ -197,6 +199,14 @@ class Logic(PluginModuleBase):
                 for source, items in grouped.items():
                     if source not in enabled_sources:
                         continue
+                    existing_ids = {
+                        row[0]
+                        for row in F.db.session.query(ModelFreeGameItem.external_id)
+                        .filter_by(platform=source)
+                        .all()
+                    }
+                    for item in items:
+                        item["is_new"] = str(item.get("external_id") or "") not in existing_ids
                     ModelFreeGameItem.replace_source_items(source, items)
                     ModelFetchLog(source, "ok", "", len(items)).save()
                     logger.info("FreeGame source=%s saved=%d", source, len(items))
