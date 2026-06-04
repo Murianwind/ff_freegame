@@ -116,6 +116,7 @@ class Logic(PluginModuleBase):
         "source_cheapshark_enabled": "True",
         "last_fetch_started": "",
         "last_fetch_finished": "",
+        "new_flags_initialized": "False",
     }
 
     def __init__(self, PM):
@@ -124,7 +125,9 @@ class Logic(PluginModuleBase):
     def plugin_load(self):
         self._migrate_scheduler_settings()
         ModelFreeGameItem.ensure_schema()
-        ModelFreeGameItem.reset_existing_new_flags()
+        if not _truthy(ModelSetting.get("new_flags_initialized")):
+            ModelFreeGameItem.reset_existing_new_flags()
+            ModelSetting.set("new_flags_initialized", "True")
 
     def _migrate_scheduler_settings(self):
         legacy_interval = str(ModelSetting.get("auto_interval") or "").strip()
