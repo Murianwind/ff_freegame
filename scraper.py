@@ -743,7 +743,9 @@ def fetch_stove_free():
         return "https://store.onstove.com/ko/games/" + str(game_id)
 
     def _build_game(data):
-        game_id = _pick(data, ["productNo", "productId", "product_id"])
+        if isinstance(data.get("product"), dict):
+            data = data["product"]
+        game_id = _pick(data, ["productNo", "productId", "product_id", "product_no", "game_no"])
         if game_id in (None, ""):
             return None
         game_id = str(game_id).strip()
@@ -754,12 +756,13 @@ def fetch_stove_free():
         if _DEMO_TITLE_RE.search(title):
             return None
 
-        current_price = _to_float(_pick(data, ["salePrice", "discountPrice", "currentPrice", "finalPrice", "price", "sellingPrice", "sale_price"]))
-        original_price = _to_float(_pick(data, ["originPrice", "originalPrice", "listPrice", "basePrice", "priceBeforeDiscount", "normalPrice", "origin_price"]))
+        amount = data.get("amount") if isinstance(data.get("amount"), dict) else {}
+        current_price = _to_float(_pick(data, ["salePrice", "discountPrice", "currentPrice", "finalPrice", "price", "sellingPrice", "sale_price"]) or amount.get("sales_price"))
+        original_price = _to_float(_pick(data, ["originPrice", "originalPrice", "listPrice", "basePrice", "priceBeforeDiscount", "normalPrice", "origin_price"]) or amount.get("original_price"))
         if original_price <= 0.0 or current_price != 0.0:
             return None
 
-        image_url = _pick(data, ["imageUrl", "image_url", "thumbnailUrl", "thumbnail_image_url", "verticalImageUrl", "horizontalImageUrl", "coverImageUrl"]) or ""
+        image_url = _pick(data, ["imageUrl", "image_url", "thumbnailUrl", "thumbnail_image_url", "verticalImageUrl", "horizontalImageUrl", "coverImageUrl", "title_image_square", "title_image_rectangle"]) or ""
         return {
             "external_id": "stove_" + game_id,
             "platform": "stove",
@@ -768,7 +771,7 @@ def fetch_stove_free():
             "store_url": _store_url(game_id, data),
             "original_price": original_price,
             "current_price": 0.0,
-            "discount_pct": 100,
+            "discount_pct": int(_to_float(amount.get("discount_rate")) or 100),
             "is_free_period": True,
             "free_start": None,
             "free_end": None,
@@ -853,6 +856,23 @@ def fetch_stove_free():
             games.append(game)
         return games
 
+    def _resolve_nuxt_refs(data, value, stack=None):
+        if stack is None:
+            stack = set()
+        if isinstance(value, int) and not isinstance(value, bool):
+            if value < 0 or value >= len(data) or value in stack:
+                return None
+            target = data[value]
+            if isinstance(target, (dict, list)):
+                stack.add(value)
+                return _resolve_nuxt_refs(data, target, stack)
+            return target
+        if isinstance(value, dict):
+            return {key: _resolve_nuxt_refs(data, item, set(stack)) for key, item in value.items()}
+        if isinstance(value, list):
+            return [_resolve_nuxt_refs(data, item, set(stack)) for item in value]
+        return value
+
     def _extract_json_from_html(html):
         payloads = []
         for match in re.finditer(r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>', html, re.I | re.S):
@@ -860,7 +880,15 @@ def fetch_stove_free():
             if not raw:
                 continue
             try:
-                payloads.append(json.loads(raw))
+                payload = json.loads(raw)
+                if 'id="__NUXT_DATA__"' in match.group(0) and isinstance(payload, list):
+                    payloads.append([
+                        _resolve_nuxt_refs(payload, item)
+                        for item in payload
+                        if isinstance(item, dict)
+                    ])
+                else:
+                    payloads.append(payload)
             except Exception:
                 pass
         for pattern in [r"__NUXT__\s*=\s*(\{.*?\})\s*</script>", r"window\.__STORE__\s*=\s*(\{.*?\})\s*;"]:
@@ -881,14 +909,11 @@ def fetch_stove_free():
 
     api_headers = dict(_HEADERS, Referer="https://store.onstove.com/", Accept="application/json")
     html_headers = dict(_HTML_HEADERS, Referer="https://store.onstove.com/")
-    api_urls = [
-        "https://store.onstove.com/api/v2/product/list?product_type=GAME&price_type=FREE&page=1&size=20",
-        "https://api.onstove.com/store/v2/product/list?product_type=GAME&price_type=FREE",
-        "https://store.onstove.com/api/store/v2/event/freegame",
-    ]
+    api_urls = []
     page_urls = [
+        "https://store.onstove.com/ko/store/Discount_Mall",
+        "https://store.onstove.com/ko/store/stoveindie",
         "https://store.onstove.com/ko/games?priceFilter=FREE",
-        "https://store.onstove.com/ko/promotions",
     ]
     results = []
     seen = set()

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
+import json
 import threading
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from flask import jsonify, render_template
@@ -16,6 +17,8 @@ from .setup import P
 logger = P.logger
 package_name = P.package_name
 _fetch_lock = threading.Lock()
+INDIEGALA_SEEN_SETTING_KEY = "indiegala_seen_games"
+INDIEGALA_MAX_DISPLAY_DAYS = 14
 
 SOURCE_LABELS = {
     "epic": "Epic",
@@ -52,6 +55,67 @@ def _split_source_payload(results):
             item["platform"] = normalized_source
             grouped[normalized_source].append(item)
     return grouped
+
+
+def _parse_dt(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _load_indiegala_seen():
+    try:
+        data = json.loads(ModelSetting.get(INDIEGALA_SEEN_SETTING_KEY) or "{}")
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_indiegala_seen(seen):
+    cutoff = datetime.now() - timedelta(days=180)
+    compacted = {
+        key: value for key, value in (seen or {}).items()
+        if (_parse_dt(value) or cutoff) >= cutoff
+    }
+    ModelSetting.set(INDIEGALA_SEEN_SETTING_KEY, json.dumps(compacted, ensure_ascii=False))
+
+
+def _filter_indiegala_items(items):
+    now = datetime.now()
+    cutoff = now - timedelta(days=INDIEGALA_MAX_DISPLAY_DAYS)
+    seen = _load_indiegala_seen()
+    existing = {
+        row.external_id: row
+        for row in F.db.session.query(ModelFreeGameItem).filter_by(platform="indiegala").all()
+    }
+    for external_id, row in existing.items():
+        if external_id and external_id not in seen:
+            first_seen = _parse_dt(row.created_time) or _parse_dt(row.updated_time) or now
+            seen[external_id] = first_seen.isoformat()
+
+    filtered = []
+    for item in items or []:
+        external_id = str(item.get("external_id") or "")
+        if not external_id:
+            continue
+        first_seen = _parse_dt(seen.get(external_id))
+        existing_row = existing.get(external_id)
+        if first_seen:
+            if first_seen < cutoff:
+                continue
+            if existing_row is None:
+                continue
+        else:
+            seen[external_id] = now.isoformat()
+        filtered.append(item)
+
+    _save_indiegala_seen(seen)
+    return filtered
 
 
 def _discord_send(webhook_url, games):
@@ -117,6 +181,7 @@ class Logic(PluginModuleBase):
         "last_fetch_started": "",
         "last_fetch_finished": "",
         "new_flags_initialized": "False",
+        INDIEGALA_SEEN_SETTING_KEY: "{}",
     }
 
     def __init__(self, PM):
@@ -195,6 +260,7 @@ class Logic(PluginModuleBase):
                 enabled_sources = set(_enabled_sources())
                 results = scraper.fetch_all()
                 grouped = _split_source_payload(results)
+                grouped["indiegala"] = _filter_indiegala_items(grouped.get("indiegala", []))
                 fresh_free_games = []
 
                 for legacy_source in ["humble", "fanatical", "gmg", "directgames"]:
