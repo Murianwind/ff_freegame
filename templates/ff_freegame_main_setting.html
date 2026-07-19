@@ -11,7 +11,7 @@
     {{ macros.info_text('last_fetch_finished', '최근 수집 완료', value=arg.get('last_fetch_finished', '')) }}
     {{ macros.m_hr() }}
     {{ macros.setting_checkbox('notify_enabled', '알림 사용', value=arg.get('notify_enabled', 'False')) }}
-    {{ macros.setting_checkbox('notify_new_only', '신규 게임만 알림', value=arg.get('notify_new_only', 'True'), desc=['이전 수집 대비 새로 추가된 게임만 알림을 보냅니다.', '끄면 수집할 때마다 조건에 맞는 무료 게임 전체를 다시 알립니다.']) }}
+    {{ macros.setting_checkbox('notify_new_only', '신규 게임만 알림', value=arg.get('notify_new_only', 'False'), desc=['이전 수집 대비 새로 추가된 게임만 알림을 보냅니다.', '끄면 수집할 때마다 조건에 맞는 무료 게임 전체를 다시 알립니다.']) }}
     {{ macros.setting_checkbox('notify_exclude_epic_kr_unavailable', 'Epic 한국 출시 미확정 게임 제외', value=arg.get('notify_exclude_epic_kr_unavailable', 'False'), desc=['Epic 상점 페이지에 "대한민국에서의 출시 절차를 확인 또는 준비 중입니다" 문구가 있어 국내에서 다운로드할 수 없는 게임은 알림에서 제외합니다.']) }}
     {{ macros.setting_input_text('notify_discord_webhook', 'Discord Webhook', value=arg.get('notify_discord_webhook', '')) }}
     {{ macros.setting_input_text('notify_telegram_bot_token', 'Telegram Bot Token', value=arg.get('notify_telegram_bot_token', '')) }}

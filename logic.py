@@ -166,7 +166,7 @@ class Logic(PluginModuleBase):
         "notify_telegram_bot_token": "",
         "notify_telegram_chat_id": "",
         "notify_enabled": "False",
-        "notify_new_only": "True",
+        "notify_new_only": "False",
         "notify_exclude_epic_kr_unavailable": "False",
         "source_epic_enabled": "True",
         "source_steam_enabled": "True",
