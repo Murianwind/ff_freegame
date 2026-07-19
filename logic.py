@@ -118,38 +118,28 @@ def _filter_indiegala_items(items):
     return filtered
 
 
+def _format_game_line(game, bold_open, bold_close):
+    prefix = "🆕 NEW " if game.get("is_new") else ""
+    title = game.get("title") or "Unknown"
+    platform = SOURCE_LABELS.get(game.get("platform"), game.get("platform"))
+    store_url = game.get("store_url") or ""
+    score = int(game.get("metacritic_score") or 0)
+    line = f"{prefix}{bold_open}{title}{bold_close} ({platform})"
+    if score > 0:
+        line += f" · MC {score}"
+    if store_url:
+        line += f"\n{store_url}"
+    return line
+
+
 def _discord_send(webhook_url, games):
-    lines = []
-    for game in games[:10]:
-        prefix = "🆕 NEW " if game.get("is_new") else ""
-        title = game.get("title") or "Unknown"
-        platform = SOURCE_LABELS.get(game.get("platform"), game.get("platform"))
-        store_url = game.get("store_url") or ""
-        score = int(game.get("metacritic_score") or 0)
-        line = f"{prefix}**{title}** ({platform})"
-        if score > 0:
-            line += f" · MC {score}"
-        if store_url:
-            line += f"\n{store_url}"
-        lines.append(line)
+    lines = [_format_game_line(game, "**", "**") for game in games[:10]]
     content = "**무료 게임 알림**\n\n" + "\n\n".join(lines)
     requests.post(webhook_url, json={"content": content}, timeout=10).raise_for_status()
 
 
 def _telegram_send(bot_token, chat_id, games):
-    lines = []
-    for game in games[:10]:
-        prefix = "🆕 NEW " if game.get("is_new") else ""
-        title = game.get("title") or "Unknown"
-        platform = SOURCE_LABELS.get(game.get("platform"), game.get("platform"))
-        store_url = game.get("store_url") or ""
-        score = int(game.get("metacritic_score") or 0)
-        line = f"{prefix}<b>{title}</b> ({platform})"
-        if score > 0:
-            line += f" · MC {score}"
-        if store_url:
-            line += f"\n{store_url}"
-        lines.append(line)
+    lines = [_format_game_line(game, "<b>", "</b>") for game in games[:10]]
     requests.post(
         f"https://api.telegram.org/bot{bot_token}/sendMessage",
         json={
@@ -162,6 +152,10 @@ def _telegram_send(bot_token, chat_id, games):
     ).raise_for_status()
 
 
+def _is_epic_kr_unavailable(game):
+    return game.get("platform") == "epic" and game.get("kr_available") is False
+
+
 class Logic(PluginModuleBase):
     db_default = {
         "main_auto_start": "False",
@@ -172,6 +166,8 @@ class Logic(PluginModuleBase):
         "notify_telegram_bot_token": "",
         "notify_telegram_chat_id": "",
         "notify_enabled": "False",
+        "notify_new_only": "True",
+        "notify_exclude_epic_kr_unavailable": "False",
         "source_epic_enabled": "True",
         "source_steam_enabled": "True",
         "source_gog_enabled": "True",
@@ -301,6 +297,10 @@ class Logic(PluginModuleBase):
         if _truthy(ModelSetting.get("notify_enabled")) is False:
             return
         targets = list(games or [])
+        if _truthy(ModelSetting.get("notify_new_only")):
+            targets = [game for game in targets if game.get("is_new")]
+        if _truthy(ModelSetting.get("notify_exclude_epic_kr_unavailable")):
+            targets = [game for game in targets if not _is_epic_kr_unavailable(game)]
         if len(targets) == 0:
             return
         discord_webhook = ModelSetting.get("notify_discord_webhook")
