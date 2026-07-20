@@ -265,14 +265,20 @@ class Logic(PluginModuleBase):
                 for source, items in grouped.items():
                     if source not in enabled_sources:
                         continue
-                    existing_ids = {
-                        row[0]
-                        for row in F.db.session.query(ModelFreeGameItem.external_id)
+                    existing_notified = {
+                        row[0]: bool(row[1])
+                        for row in F.db.session.query(
+                            ModelFreeGameItem.external_id, ModelFreeGameItem.notified
+                        )
                         .filter_by(platform=source)
                         .all()
                     }
                     for item in items:
-                        item["is_new"] = str(item.get("external_id") or "") not in existing_ids
+                        external_id = str(item.get("external_id") or "")
+                        # 알림 대상 여부: DB에 처음 저장되는 게임뿐 아니라, 이미 저장은 됐지만
+                        # (필터에 걸리거나 알림이 꺼져 있거나 전송에 실패해) 아직 알림을 못 받은
+                        # 게임도 포함한다. existing_notified.get(id, False) == 이전에 실제로 알림이 나간 적이 있는가.
+                        item["is_new"] = not existing_notified.get(external_id, False)
                     ModelFreeGameItem.replace_source_items(source, items)
                     ModelFetchLog(source, "ok", "", len(items)).save()
                     logger.info("FreeGame source=%s saved=%d", source, len(items))
@@ -306,15 +312,22 @@ class Logic(PluginModuleBase):
         discord_webhook = ModelSetting.get("notify_discord_webhook")
         telegram_bot_token = ModelSetting.get("notify_telegram_bot_token")
         telegram_chat_id = ModelSetting.get("notify_telegram_chat_id")
+        sent_ok = False
         if discord_webhook:
             try:
                 _discord_send(discord_webhook, targets)
+                sent_ok = True
                 logger.info("FreeGame Discord notification sent: %d", min(len(targets), 10))
             except Exception as e:
                 logger.error("FreeGame Discord notification failed: %s", e)
         if telegram_bot_token and telegram_chat_id:
             try:
                 _telegram_send(telegram_bot_token, telegram_chat_id, targets)
+                sent_ok = True
                 logger.info("FreeGame Telegram notification sent: %d", min(len(targets), 10))
             except Exception as e:
                 logger.error("FreeGame Telegram notification failed: %s", e)
+        if sent_ok:
+            # 메시지 본문에는 최대 10개까지만 실제로 언급되므로(_discord_send/_telegram_send의
+            # games[:10]), 그만큼만 notified 처리한다. 11번째 이후는 다음 발송 때 다시 대상이 된다.
+            ModelFreeGameItem.mark_notified(targets[:10])
