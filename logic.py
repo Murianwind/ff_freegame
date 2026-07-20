@@ -177,6 +177,7 @@ class Logic(PluginModuleBase):
         "last_fetch_started": "",
         "last_fetch_finished": "",
         "new_flags_initialized": "False",
+        "notified_backfill_v2_done": "False",
         INDIEGALA_SEEN_SETTING_KEY: "{}",
     }
 
@@ -189,6 +190,11 @@ class Logic(PluginModuleBase):
         if not _truthy(ModelSetting.get("new_flags_initialized")):
             ModelFreeGameItem.reset_existing_new_flags()
             ModelSetting.set("new_flags_initialized", "True")
+        if not _truthy(ModelSetting.get("notified_backfill_v2_done")):
+            # 이전 마이그레이션이 SQLite의 ADD COLUMN DEFAULT 동작 때문에 기존 행을
+            # notified=0으로 남겨둔 채 백필에 실패했던 결함을 1회 복구한다.
+            ModelFreeGameItem.backfill_notified()
+            ModelSetting.set("notified_backfill_v2_done", "True")
 
     def _migrate_scheduler_settings(self):
         legacy_interval = str(ModelSetting.get("auto_interval") or "").strip()
@@ -273,6 +279,14 @@ class Logic(PluginModuleBase):
                         .filter_by(platform=source)
                         .all()
                     }
+                    if source == "epic":
+                        # 진단용: external_id가 매일 안정적으로 유지되는지, DB에 이미
+                        # notified=True로 남아있는지를 직접 비교할 수 있도록 남긴다.
+                        logger.info("FreeGame epic diag existing=%s", existing_notified)
+                        logger.info(
+                            "FreeGame epic diag incoming=%s",
+                            [str(item.get("external_id") or "") for item in items],
+                        )
                     for item in items:
                         external_id = str(item.get("external_id") or "")
                         # 알림 대상 여부: DB에 처음 저장되는 게임뿐 아니라, 이미 저장은 됐지만
