@@ -34,6 +34,7 @@ class ModelFreeGameItem(ModelBase):
     metacritic_score = db.Column(db.Integer)
     metacritic_url = db.Column(db.String)
     genres_json = db.Column(db.Text)
+    notified = db.Column(db.Boolean)
 
     def __init__(self):
         now = datetime.now()
@@ -82,6 +83,7 @@ class ModelFreeGameItem(ModelBase):
             row = cls()
             row.external_id = str(data.get("external_id") or "")
             row.platform = str(data.get("platform") or "")
+            row.notified = False
             F.db.session.add(row)
         row.title = str(data.get("title") or "")
         row.image_url = str(data.get("image_url") or "")
@@ -114,6 +116,9 @@ class ModelFreeGameItem(ModelBase):
                         conn.execute(text(f"ALTER TABLE {cls.__tablename__} ADD COLUMN metacritic_score INTEGER"))
                     if "metacritic_url" not in columns:
                         conn.execute(text(f"ALTER TABLE {cls.__tablename__} ADD COLUMN metacritic_url VARCHAR"))
+                    if "notified" not in columns:
+                        conn.execute(text(f"ALTER TABLE {cls.__tablename__} ADD COLUMN notified BOOLEAN DEFAULT 0"))
+                        conn.execute(text(f"UPDATE {cls.__tablename__} SET notified = 1 WHERE notified IS NULL"))
             except Exception:
                 P.logger.exception("ff_freegame schema migration failed")
 
@@ -161,6 +166,19 @@ class ModelFreeGameItem(ModelBase):
                 query.delete(synchronize_session=False)
             for item in items:
                 cls.upsert(item)
+            F.db.session.commit()
+
+    @classmethod
+    def mark_notified(cls, items):
+        with F.app.app_context():
+            for item in items:
+                external_id = str(item.get("external_id") or "")
+                platform = str(item.get("platform") or "")
+                if not external_id:
+                    continue
+                F.db.session.query(cls).filter_by(
+                    external_id=external_id, platform=platform
+                ).update({cls.notified: True}, synchronize_session=False)
             F.db.session.commit()
 
     @classmethod
