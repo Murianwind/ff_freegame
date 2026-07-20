@@ -118,7 +118,12 @@ class ModelFreeGameItem(ModelBase):
                         conn.execute(text(f"ALTER TABLE {cls.__tablename__} ADD COLUMN metacritic_url VARCHAR"))
                     if "notified" not in columns:
                         conn.execute(text(f"ALTER TABLE {cls.__tablename__} ADD COLUMN notified BOOLEAN DEFAULT 0"))
-                        conn.execute(text(f"UPDATE {cls.__tablename__} SET notified = 1 WHERE notified IS NULL"))
+                        # SQLite는 DEFAULT가 있는 ADD COLUMN 실행 시 기존 행을 NULL이 아니라
+                        # 그 기본값(0)으로 즉시 채운다. 그래서 "WHERE notified IS NULL" 조건은
+                        # 절대 매칭되지 않는다 — 이 블록은 컬럼이 없을 때 딱 한 번만 실행되므로
+                        # 조건 없이 전부 1로 채워도 안전하다(신규 배포 직전까지 있던 게임은
+                        # "이미 알림 나간 것"으로 간주해 배포 직후 알림 폭탄을 막는다).
+                        conn.execute(text(f"UPDATE {cls.__tablename__} SET notified = 1"))
             except Exception:
                 P.logger.exception("ff_freegame schema migration failed")
 
@@ -167,6 +172,20 @@ class ModelFreeGameItem(ModelBase):
             for item in items:
                 cls.upsert(item)
             F.db.session.commit()
+
+    @classmethod
+    def backfill_notified(cls):
+        with F.app.app_context():
+            try:
+                updated = F.db.session.query(cls).update({cls.notified: True}, synchronize_session=False)
+                F.db.session.commit()
+                if updated:
+                    P.logger.info("ff_freegame notified backfill repaired: %d", updated)
+                return updated
+            except Exception:
+                F.db.session.rollback()
+                P.logger.exception("ff_freegame notified backfill failed")
+                return 0
 
     @classmethod
     def mark_notified(cls, items):
