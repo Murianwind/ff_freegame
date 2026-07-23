@@ -462,21 +462,24 @@ _EPIC_GQL_URL = "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGam
 _EPIC_INVALID_SLUGS = {"home", "", "/home", "[]"}
 _DEMO_TITLE_RE = re.compile(r"\b(demo|prologue|trial|playtest|beta|free\s*to\s*play|f2p)\b", re.IGNORECASE)
 # 한국 상점 페이지에 뜨는 "출시 절차 확인/준비 중" 문구 — 이 게임은 국내에서 다운로드가 불가능하다.
-_EPIC_KR_UNAVAILABLE_MARKERS = (
-    "대한민국에서의 출시 절차를 확인 또는 준비 중입니다",
-    "대한민국에서의 출시 절차",
-)
+def _fetch_epic_kr_catalog():
+    """KR 국가 기준 무료 프로모션 목록을 조회해 (id 집합, 제목 집합)을 반환한다.
 
-
-def _epic_kr_available(store_url):
-    if not store_url or "store.epicgames.com" not in store_url:
-        return True
+    Epic은 한국 심의(출시 절차) 미확정 게임을 KR 국가 조회 결과에서 아예 제외하므로,
+    US 목록에는 있지만 KR 목록에 없는 게임 = "대한민국에서의 출시 절차를 확인 또는
+    준비 중입니다" 상태로 판별할 수 있다. 상점 HTML을 긁는 방식(봇 차단 403으로
+    사실상 항상 실패)을 대체한다. 조회 실패 시 None을 반환하며, 이 경우 호출부는
+    전부 "이용 가능"으로 간주한다(오탐 제외 방지).
+    """
     try:
-        html = _get(store_url, html=True).text
+        data = _get(_EPIC_GQL_URL, params={"locale": "en", "country": "KR", "allowCountries": "KR"}).json()
     except Exception as e:
-        log.debug("Epic KR availability check failed url=%s: %s", store_url, e)
-        return True
-    return not any(marker in html for marker in _EPIC_KR_UNAVAILABLE_MARKERS)
+        log.warning("Epic KR catalog fetch failed(전체 '이용가능' 처리): %s", e)
+        return None
+    elements = data.get("data", {}).get("Catalog", {}).get("searchStore", {}).get("elements", [])
+    ids = {str(el.get("id") or "") for el in elements if el.get("id")}
+    titles = {str(el.get("title") or "").strip().lower() for el in elements if el.get("title")}
+    return ids, titles
 
 
 def _epic_store_url(el):
@@ -575,8 +578,17 @@ def fetch_epic_free():
             "rating": 0.0,
             "rating_count": 0,
         })
+    kr_catalog = _fetch_epic_kr_catalog()
     for game in results:
-        game["kr_available"] = _epic_kr_available(game.get("store_url"))
+        if kr_catalog is None:
+            game["kr_available"] = True
+        else:
+            kr_ids, kr_titles = kr_catalog
+            game["kr_available"] = (
+                str(game.get("external_id") or "") in kr_ids
+                or str(game.get("title") or "").strip().lower() in kr_titles
+            )
+        log.info("Epic KR availability title=%s available=%s", game.get("title"), game["kr_available"])
     return results
 
 
